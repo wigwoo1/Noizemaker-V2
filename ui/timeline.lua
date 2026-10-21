@@ -21,7 +21,7 @@ local function color_for_code(code, is_rescue)
 end
 
 local function format_beats(timing)
-    local beats = timing / 4
+    local beats = format.total_ticks(timing) / format.CHART_TICKS_PER_BEAT
     if beats == math.floor(beats) then
         return tostring(beats)
     end
@@ -93,11 +93,10 @@ function M.summary_text(entry)
     end
     local total_ticks = format.total_ticks(entry.timing)
     return string.format(
-        "Total: %dt | %s beats | %d 1/4ths | 6t each",
+        "Total: %dt | %s beats | %dt per beat",
         total_ticks,
         format_beats(entry.timing),
-        entry.timing,
-        6
+        format.CHART_TICKS_PER_BEAT
     )
 end
 
@@ -198,12 +197,13 @@ function M.draw(rect, entry, selected_step_index, options)
 
     for tick = 0, sequence_ticks, 6 do
         local x = plot.x + tick * scale
-        local is_major = (tick % 24) == 0
+        local is_major = (tick % format.CHART_TICKS_PER_BEAT) == 0
         local line_color = is_major and theme.colors.grid_major or theme.colors.grid_minor
         love.graphics.setColor(line_color[1], line_color[2], line_color[3], 1)
         love.graphics.setLineWidth(is_major and 2 or 1)
         love.graphics.line(x, plot.y + 8, x, plot.y + plot.h - 8)
-        if is_major then
+        local label_stride = format.CHART_TICKS_PER_BEAT * math.max(1, math.ceil(34 / (scale * format.CHART_TICKS_PER_BEAT)))
+        if is_major and tick % label_stride == 0 then
             love.graphics.setFont(theme.font("tiny"))
             love.graphics.print(tostring(tick), x + 4, plot.y + 6)
         end
@@ -259,6 +259,8 @@ function M.draw(rect, entry, selected_step_index, options)
         local x = plot.x + node.tick * scale
         local y = baseline_y
         local is_selected = selected_step_index == i
+        local active = options.playhead_tick and options.playhead_tick >= node.tick
+            and (not nodes[i + 1] or options.playhead_tick < nodes[i + 1].tick)
         local is_dragging = options.drag_index == i
         local rect_node = node_rect(x, y, is_selected)
         local label_text = timeline_label_text(node.label)
@@ -271,6 +273,7 @@ function M.draw(rect, entry, selected_step_index, options)
         }
 
         local fill = node.color
+        if active then fill = theme.colors.accent end
         if is_dragging then
             fill = theme.colors.amber
         end
@@ -321,6 +324,13 @@ function M.draw(rect, entry, selected_step_index, options)
         render.hits[#render.hits + 1] = hit
     end
 
+    if options.playhead_tick then
+        local cursor = plot.x + math.max(0, math.min(total_ticks, options.playhead_tick)) * scale
+        love.graphics.setColor(theme.colors.accent)
+        love.graphics.setLineWidth(2)
+        love.graphics.line(cursor, plot.y - 10, cursor, plot.y + plot.h)
+        love.graphics.setLineWidth(1)
+    end
     return render
 end
 

@@ -24,6 +24,41 @@ local function try_set_window_icon()
 end
 
 function love.load(args)
+    if args and args[1] == "--startup-smoke-test" then
+        love.errorhandler = function(msg)
+            local f = io.open(args[2] .. "/startup-error.txt", "w")
+            if f then f:write(tostring(msg) .. "\n" .. debug.traceback()); f:close() end
+            return function() return 1 end
+        end
+        -- Catch the actual regression, even if the app eventually opens after
+        -- a Windows helper error. Startup and Settings must work without a shell.
+        io.popen = function() error("Startup/Settings attempted io.popen") end
+        os.execute = function() error("Startup/Settings attempted os.execute") end
+    end
+    if args and args[1] == "--gesture-smoke-test" then
+        require("tests.gesture_smoke").start(args)
+        return
+    end
+    if args and args[1] == "--project-smoke-test" then
+        app=require("tests.project_smoke").start(args)
+        return
+    end
+    if args and args[1] == "--export-smoke-test" then
+        app=require("tests.export_smoke").start(args)
+        return
+    end
+    if args and args[1] == "--route-smoke-test" then
+        app=require("tests.route_smoke").start(args)
+        return
+    end
+    if args and args[1] == "--audio-smoke-test" then
+        require("tests.audio_smoke").start(args)
+        return
+    end
+    if args and args[1] == "--report-smoke-test" then
+        require("tests.report_smoke").start(args)
+        return
+    end
     love.window.setTitle("Noizemaker")
     love.window.setMode(1280, 720, {
         resizable = true,
@@ -36,6 +71,9 @@ function love.load(args)
     app:load(args or {})
     if app and not icon_ok then
         app.status_text = "Window icon load failed: " .. tostring(icon_detail)
+    end
+    if args and args[1] == "--startup-smoke-test" then
+        require("tests.startup_smoke").start(app,args)
     end
 end
 
@@ -97,4 +135,8 @@ function love.resize(w, h)
     if app then
         app:resize(w, h)
     end
+end
+
+function love.quit()
+    if app then return app:request_quit() end
 end

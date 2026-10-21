@@ -297,10 +297,11 @@ function M.rebuild_entry(entry, new_steps, options)
     end
     local new_term = M.encode_start_delay(step_count, start_delay)
 
-    local buf = entry.raw
-    if rules.detect_rescue_section(entry) == nil then
-        buf = write_u16(buf, 8, step_count)
-    end
+    -- 0x2b parameters are meter, sequence length, BPM. Offset 8 is the
+    -- meter, not another command count. The input count is written below.
+    -- Sequence length and input length have equal numeric values, although
+    -- the input length describes half-beat units for the call/response half.
+    local buf = write_u16(entry.raw, 10, total)
 
     local parts = {
         buf,
@@ -362,6 +363,9 @@ end
 
 function M.apply_mods(buffer, entries, mods)
     local data = normalize_buffer(buffer)
+    -- Some English files have a size field that differs from their
+    -- byte length. A no-op must preserve that original header exactly.
+    if next(mods) == nil then return data end
     local shift = 0
 
     for _, entry in ipairs(entries) do

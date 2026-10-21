@@ -1530,7 +1530,7 @@ function M.validate_mod(entry, new_steps, options)
 
     if options.timing ~= nil then
         if not is_integer(options.timing) then
-            fail("timing must be an integer quarter-note count.")
+            fail("timing must be a whole number of half-beat units.")
         elseif options.timing < 0 or options.timing > 0xFFFF then
             warn("timing will be clamped to the u16 range 0..65535 during rebuild.")
         end

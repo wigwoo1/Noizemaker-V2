@@ -1,0 +1,33 @@
+{
+  "source_file": "afs_english/r11_sh.bin",
+  "source_sha256": "e8b80163b7cbc53d34ce4fd7487adf46fb3907357cded484cb6692fcad925bf9",
+  "question": "q411a",
+  "entry": "pk001",
+  "bpm": 144,
+  "codes": [
+    1,
+    1,
+    1
+  ],
+  "chart_ticks": [
+    48,
+    66,
+    84
+  ],
+  "engine_note_ticks": [
+    240,
+    330,
+    420
+  ],
+  "engine_phrase_ticks": 480,
+  "expected_note_seconds": [
+    1.6666666666666667,
+    2.2916666666666665,
+    2.9166666666666665
+  ],
+  "expected_duration_seconds": 3.3333333333333335,
+  "clock_samples": 49,
+  "engine_ticks_per_beat": 60,
+  "chart_ticks_per_beat": 12,
+  "executable_sha256": "2d7395bb9d06c4cd48af165e5363d0dc3e9c9815eb0b189182d97e32bc4cfec1"
+}

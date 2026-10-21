@@ -15,3 +15,14 @@ legacy_python/
 dist/
 cache/
 docs/
+
+# Local projects, extracted game assets, and audio previews are not source.
+*.sc5project
+*.bin
+*.BIN
+*.afs
+*.AFS
+*.adx
+*.wav
+*.mp3
+captures/

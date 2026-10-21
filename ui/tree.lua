@@ -1,5 +1,6 @@
 local widgets = require("ui.widgets")
 local theme = require("ui.theme")
+local report = require("core.report")
 
 local M = {}
 
@@ -121,6 +122,14 @@ local function fallback_group_name(base)
     return base or "Ungrouped"
 end
 
+function M.entry_label(entry, child)
+    if entry.route then return 'Phrase '..entry.route.phrase_index end
+    local variant = entry.name:match("^%a+%d+(%a+)$")
+    if entry.route_parent then return 'Alternate '..(variant or '?'):upper()..' (unseen)' end
+    if child and variant then return "Alternate " .. variant:upper() end
+    return report.phrase_label(entry)
+end
+
 local function build_branches(entries, collapse_state, group_key)
     local clusters = {}
     local order = {}
@@ -160,7 +169,7 @@ local function build_branches(entries, collapse_state, group_key)
             branches[#branches + 1] = {
                 kind = "branch",
                 key = ("%s::%s"):format(group_key, base_key),
-                label = base_key,
+                label = M.entry_label(base_entry),
                 entry = base_entry,
                 collapsed = collapse_state and collapse_state[("%s::%s"):format(group_key, base_key)] or false,
                 children = children,
@@ -179,7 +188,10 @@ function M.build_groups(entries, file_path, reports_paths, collapse_state)
     for _, entry in ipairs(entries or {}) do
         local prefix, label = section_for_base(entry.base, labels)
         local group_key = prefix or fallback_group_name(entry.base)
-        local group_label = label or group_key
+        local group_label = label or ({pd = "Dance", ps = "Shooting", pk = "Final"})[group_key] or group_key
+        local location=entry.route or entry.route_parent
+        if location then group_key,group_label=location.group_key,location.group_label end
+        if entry.route_unobserved and not location then group_key,group_label='unobserved','Unobserved phrases' end
 
         local group = group_map[group_key]
         if not group then
@@ -248,6 +260,14 @@ local function draw_marker_badge(rect, marker, y_offset)
     })
 end
 
+local function fit_text(text, width)
+    if love.graphics.getFont():getWidth(text) <= width then return text end
+    repeat
+        text = text:gsub("[\1-\127\194-\244][\128-\191]*$", "")
+    until text == "" or love.graphics.getFont():getWidth(text .. "...") <= width
+    return text .. "..."
+end
+
 local function draw_entry_row(rect, entry, selected_entry, marker, options)
     options = options or {}
     local is_selected = selected_entry and selected_entry.name == entry.name
@@ -266,7 +286,12 @@ local function draw_entry_row(rect, entry, selected_entry, marker, options)
 
     love.graphics.setFont(theme.font("small"))
     love.graphics.setColor(text_color[1], text_color[2], text_color[3], 1)
-    love.graphics.print(options.label or entry.name, rect.x + (options.label_x or 12), rect.y + (options.label_y or 4))
+    local x = rect.x + (options.label_x or 12)
+    local available = rect.w - (x - rect.x) - (marker and marker.dirty and 54 or 8)
+    local label = fit_text(options.label or M.entry_label(entry), available)
+    love.graphics.print(label, x, rect.y + 4)
+    love.graphics.setColor(theme.colors.text_muted)
+    love.graphics.print(entry.name, x, rect.y + 23)
     draw_marker_badge(rect, marker, options.badge_y)
 end
 
@@ -281,13 +306,18 @@ function M.draw(state, rect, selected_entry, entry_markers)
     widgets.draw_panel(rect, { fill = theme.colors.panel_alt, border = theme.colors.border })
     love.graphics.setFont(theme.font("small"))
     love.graphics.setColor(theme.colors.text[1], theme.colors.text[2], theme.colors.text[3], 1)
-    love.graphics.print("Entries", rect.x + 16, rect.y + 12)
+    love.graphics.print(state.report_label or "Entries", rect.x + 16, rect.y + 10)
+    love.graphics.setColor(theme.colors.text_dim)
+    local section = fit_text(state.section_label or "Section not identified", rect.w - 32)
+    love.graphics.print(section, rect.x + 16, rect.y + 30)
+    love.graphics.setColor(theme.colors.amber)
+    love.graphics.print(state.route_available and "CPU run; paths vary" or "Scene/order unverified", rect.x + 16, rect.y + 50)
 
     local list_rect = {
         x = rect.x + 8,
-        y = rect.y + 40,
+        y = rect.y + 78,
         w = rect.w - 16,
-        h = rect.h - 48,
+        h = rect.h - 86,
     }
 
     widgets.scissor_push(list_rect)
@@ -295,9 +325,9 @@ function M.draw(state, rect, selected_entry, entry_markers)
     state.hit_regions = {}
     local cursor_y = list_rect.y + 4 - state.scroll
     local group_h = 28
-    local item_h = 24
-    local branch_h = 24
-    local child_h = 22
+    local item_h = 44
+    local branch_h = 44
+    local child_h = 44
 
     for _, group in ipairs(state.groups) do
         local group_rect = { x = list_rect.x, y = cursor_y, w = list_rect.w, h = group_h }
@@ -344,6 +374,7 @@ function M.draw(state, rect, selected_entry, entry_markers)
                             local item_rect = { x = list_rect.x + 28, y = cursor_y, w = list_rect.w - 28, h = child_h }
                             if row_visible(item_rect, list_rect) then
                                 draw_entry_row(item_rect, entry, selected_entry, entry_markers and entry_markers[entry.name] or nil, {
+                                    label = M.entry_label(entry, true),
                                     text_color = theme.colors.text_dim,
                                     label_y = 3,
                                     badge_y = 2,
@@ -406,9 +437,9 @@ function M.wheelmoved(state, rect, mx, my, wheel_y)
     end
     local list_rect = {
         x = rect.x + 8,
-        y = rect.y + 40,
+        y = rect.y + 78,
         w = rect.w - 16,
-        h = rect.h - 48,
+        h = rect.h - 86,
     }
     state.scroll = state.scroll - wheel_y * 28
     clamp_scroll(state, list_rect)

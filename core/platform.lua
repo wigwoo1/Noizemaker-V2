@@ -1,6 +1,31 @@
 local M = {}
 
 local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+-- LOVE bundles LuaJIT. Keep the old portable fallback for other Lua hosts.
+local windows
+if IS_WINDOWS and pcall(require, "ffi") then windows = require("core.windows") end
+
+function M.replace_file(source, destination)
+    if windows then return windows.replace_file(source,destination) end
+    return os.rename(source,destination)
+end
+
+function M.create_dir_exclusive(path)
+    if windows then return windows.create_dir_exclusive(path) end
+    if M.directory_exists(path) then return false end
+    return M.ensure_dir(path)
+end
+
+function M.remove_empty_dir(path)
+    if windows then return windows.remove_empty_dir(path) end
+    return os.remove(path)
+end
+
+function M.rename_new(source,destination)
+    if windows then return windows.rename_new(source,destination) end
+    if M.directory_exists(destination) then return nil,"Destination already exists." end
+    return os.rename(source,destination)
+end
 
 local function trim(text)
     return (tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", ""))
@@ -247,6 +272,7 @@ function M.ensure_dir(path)
     if not path or path == "" then
         return false
     end
+    if windows then return windows.ensure_dir(path) end
     if IS_WINDOWS then
         local script = {
             "$target = '" .. tostring(path):gsub("'", "''") .. "'",
@@ -289,6 +315,7 @@ function M.directory_exists(path)
     if not path or path == "" then
         return false
     end
+    if windows then return windows.directory_exists(path) end
     if IS_WINDOWS then
         local output = run_powershell("$target = '" .. tostring(path):gsub("'", "''") .. "'; if (Test-Path -LiteralPath $target -PathType Container) { Write-Output 'yes' }")
         return output == "yes"
@@ -297,6 +324,7 @@ function M.directory_exists(path)
 end
 
 function M.list_directories(path)
+    if windows then return windows.list_directories(path) end
     local command
     if IS_WINDOWS then
         local script = {
@@ -328,6 +356,7 @@ function M.list_directories(path)
 end
 
 function M.list_files_recursive(path)
+    if windows then return windows.list_files_recursive(path) end
     if IS_WINDOWS then
         local script = {
             "$root = [System.IO.Path]::GetFullPath('" .. tostring(path):gsub("'", "''") .. "')",

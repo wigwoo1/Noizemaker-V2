@@ -210,4 +210,41 @@ function M.decode(text)
     return value
 end
 
+-- Stable ordering makes project files easy to compare and inspect.
+function M.encode(value)
+    local function quote(s)
+        return '"'..s:gsub('[%z\1-\31\\"]',function(c)
+            if c=='"' then return '\\"' end
+            if c=='\\' then return '\\\\' end
+            return string.format('\\u%04x',c:byte())
+        end)..'"'
+    end
+    local active={}
+    local function encode(v)
+        local kind=type(v)
+        if kind=='string' then return quote(v) end
+        if kind=='boolean' then return tostring(v) end
+        if kind=='number' then
+            assert(v==v and v~=math.huge and v~=-math.huge,'JSON number is not finite')
+            return string.format('%.17g',v)
+        end
+        assert(kind=='table','Unsupported JSON value')
+        assert(not active[v],'Circular JSON table');active[v]=true
+        local keys,parts={},{}
+        for key in pairs(v) do keys[#keys+1]=key end
+        local array=#v>0
+        if array then
+            assert(#keys==#v,'Sparse JSON array')
+            for i=1,#v do parts[i]=encode(v[i]) end
+        else
+            for _,key in ipairs(keys) do assert(type(key)=='string','JSON object key must be text') end
+            table.sort(keys)
+            for i,key in ipairs(keys) do parts[i]=quote(key)..':'..encode(v[key]) end
+        end
+        active[v]=nil
+        return (array and '[' or '{')..table.concat(parts,',')..(array and ']' or '}')
+    end
+    return encode(value)
+end
+
 return M

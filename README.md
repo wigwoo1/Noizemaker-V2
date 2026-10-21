@@ -1,12 +1,24 @@
-# Noizemaker
+# Noizemaker V2 — Visual Chart Editor
 
-Noizemaker is a Space Channel 5 Part 2 rhythm editor and patcher.
+An in-development Windows visual chart editor for Space Channel 5 Part 2,
+based on [Hyonk-Tea's Noizemaker](https://github.com/Hyonk-Tea/Noizemaker).
+The original editor and patcher remain the foundation of this project.
+
+This repository contains the current visual preview source: English report
+loading, drag-and-drop command editing, English voice previews, partial music
+mapping, project saving, and report exports. Automatic whole-report playback,
+complete music/extended-call mapping, and in-game export verification are still
+unfinished. Report 1's recorded CPU route is supported; other routes and scene
+names remain provisional. Game assets and audio are read from your own game
+installation at runtime.
 
 ## Running the app
 
-Ideally, download the packaged `.zip` from the Releases page.
+Use LOVE 11.5 to run this preview from source. A source download from GitHub
+does not include the LOVE runtime. Select your own PC game installation in
+Settings, then choose **Reports** to browse the English charts in `afs_english`.
 
-If you want to run it from source instead, from the repo root:
+From the repository root, with LOVE available on your command path:
 
 ```powershell
 love .
@@ -24,7 +36,35 @@ The normal flow is:
 2. Pick an entry from the left panel.
 3. Edit the working copy in the timeline or inspector.
 4. Press `Apply` to store that entry in the pending patch set.
-5. Press `Patch` or `Ctrl+S` to write a patched copy.
+5. Press `Patch` to write a patched copy.
+
+In the visual preview, use **Project** at the top right or `Ctrl+S` to save all
+open English chart edits to a `.sc5project` file. `Ctrl+Shift+S` saves as a new
+project; `Ctrl+O` reopens one. Project panels accept a full file path without
+launching a Windows helper dialog. Projects contain edit data and source
+checksums; they require matching game files when reopened. Closing with
+unsaved edits offers Save first, Discard & exit, or Cancel. Undo history starts
+fresh when a project is reopened.
+
+Choose **Project > Export report** to export all changed English chart files
+for one report together. In the editor this uses the active chart's report;
+in the report browser it uses the selected report. Choose a new folder outside
+the game installation. The export keeps the `afs_english` layout and required
+filenames, and includes a manifest listing affected phrases and source/output
+checksums. Existing export folders are protected. Exports do not install changes
+or save your project; keep using Project Save for editable work. In-game
+verification of exported charts remains pending.
+
+Matching English Report 1 source files open in **Order: CPU run**, a list of 58
+input phrases corroborated by captured engine queues and question stacks.
+Switch to **Order: files** or show Variants for other entries and branches.
+The sidebar uses matching encounter/set/phrase locations and keeps original IDs
+underneath. **Prev/Next** selects adjacent recorded phrases across chart files,
+stopping the current preview. Automatic whole-report playback remains unfinished.
+This is one CPU-run route: the cross-file handoff was not continuously recorded,
+other performance branches remain unverified, and exact scene names are still
+provisional. Changed source files fall back to file order. Displayed response
+times are engine positions within a part, rather than measured audio onsets.
 
 The editor supports:
 
@@ -41,7 +81,9 @@ Modified entries are marked in the entry list. Invalid edits are blocked before 
 - `Delete` / `Backspace`: delete selected step
 - `Ctrl+Z`: undo
 - `Ctrl+Y` or `Ctrl+Shift+Z`: redo
-- `Ctrl+S`: patch a copy
+- `Ctrl+S`: save project
+- `Ctrl+Shift+S`: save project as
+- `Ctrl+O`: open project
 - `Escape`: clear step selection or cancel move placement
 
 ## Mods

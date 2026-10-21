@@ -36,6 +36,9 @@ for code, name in pairs(M.MOVES) do
 end
 
 M.TICK_CYCLE = { 6, 12, 18, 24, 48, 72 }
+-- The game schedules each stored chart tick as five engine ticks, with
+-- sixty engine ticks per beat. Verified against a live Report 1 input.
+M.CHART_TICKS_PER_BEAT = 12
 M.SPECIAL_DISPLAY_NAMES = {
     [0x83] = "Special UP",
     [0x85] = "Special DOWN",
