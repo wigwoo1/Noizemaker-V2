@@ -24,6 +24,10 @@ local function try_set_window_icon()
 end
 
 function love.load(args)
+    if args and args[1] == '--question-voice-report4-smoke-test' then
+        app=require('tests.question_voice_report4_smoke').start(args)
+        return
+    end
     if args and args[1] == '--question-voice-report2-smoke-test' then
         app=require('tests.question_voice_report2_smoke').start(args)
         return

@@ -32,7 +32,13 @@ assignments are supported by representative stock-recording comparisons. Three
 groups have weak matches and are labeled provisional. Twenty-eight occurrences
 of unmapped raw chart bytes remain silent in both halves; the app labels these
 phrases when played. Other Report 2 branches and exact audible sync remain
-unverified. Reports 3–6 still use response-only phrase previews.
+unverified. Report 4's first two sections now include enemy questions where
+the recorded CPU route identifies robot, cheerleader, Shadow, Fuse, or Michael
+banks. Play follows each enemy call with Ulala's response and the mapped music.
+Unmapped calls remain silent in both halves, and the app labels the bank choice
+and audible alignment provisional. Report 4's later sections and Reports 3,
+5, and 6 still use response-only phrase previews while their enemy voices are
+being mapped.
 
 Report 4 now has a recorded CPU phrase order across its four sections.
 **Play R4 music** renders its stereo music cues. **R4 original calls** adds the

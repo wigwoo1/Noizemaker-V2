@@ -1407,7 +1407,9 @@ function App:prepare_playback()
         local voice_context=require('core.voice_context').resolve(entry,self.current_file_path,self.current_buffer,bank.stem)
         local plan = playback.plan(entry, state.bpm, state.range_start, state.range_end, bank.stem,voice_context)
         local question_voice=bank.stem:match('^r2[1-3]$')
-            and require('core.question_voice_report2') or require('core.question_voice')
+            and require('core.question_voice_report2')
+            or bank.stem:match('^r4[12]$')
+            and require('core.question_voice_report4') or require('core.question_voice')
         local question_event=question_voice.event(self.selected_entry,entry,self.current_file_path,
             self.current_buffer,bank.stem,plan)
         if question_event then

@@ -199,7 +199,7 @@ end
 -- A recorded Report 1 question and response share one checked script cue.
 -- Require that cue to cover both halves; never stretch the response-only clip.
 function M.prepare_full_question(root,stem,original,preview,plan,event,cache)
-    local report_number=stem and tonumber(stem:match('^r([12])%d$'))
+    local report_number=stem and tonumber(stem:match('^r([124])%d$'))
     if not event or not report_number or preview.timing~=original.timing
         or plan.bpm~=playback.tempo(original) then
         return nil,'Full-phrase music needs the original recorded timing and chart BPM.'
