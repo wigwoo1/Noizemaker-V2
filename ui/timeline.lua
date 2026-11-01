@@ -10,14 +10,43 @@ local function color_for_code(code, is_rescue)
         return theme.colors.rest
     elseif format.is_raw_byte(code) then
         return theme.colors.raw
-    elseif code == 1 then
-        return theme.colors.chu
-    elseif code == 2 then
-        return theme.colors.hey
     elseif is_rescue then
         return theme.colors.amber
     end
-    return theme.colors.move
+    local command = format.step_display_name(code):gsub("^HOLD", ""):lower()
+    return theme.colors[command] or theme.colors.move
+end
+
+local function draw_command_symbol(node, x, y, size)
+    -- Draw vectors so arrows remain readable without depending on installed
+    -- fonts. Only named commands get symbols; unknown bytes stay unassigned.
+    local command = node.label:gsub("^Special ", ""):gsub("^HOLD", "")
+    local direction = {UP={0,-1}, RIGHT={1,0}, LEFT={-1,0}, DOWN={0,1}}
+    love.graphics.setColor(theme.colors.bg_top)
+    love.graphics.setLineWidth(1.5)
+    if direction[command] then
+        local dx, dy = unpack(direction[command])
+        -- Two convex polygons form an arrow pointing up in local coordinates.
+        for _, shape in ipairs({{{0,-1},{1,0},{-1,0}},
+            {{-0.38,0},{0.38,0},{0.38,1},{-0.38,1}}}) do
+            local points = {}
+            for _, p in ipairs(shape) do
+                points[#points+1] = x + (-dy*p[1] - dx*p[2])*size
+                points[#points+1] = y + (dx*p[1] - dy*p[2])*size
+            end
+            love.graphics.polygon("fill", points)
+        end
+    elseif command == "CHU" then
+        love.graphics.circle("fill", x, y, size*0.6)
+    elseif command == "HEY" then
+        love.graphics.circle("line", x, y, size*0.65)
+    elseif command == "REST" then
+        love.graphics.line(x-size*0.65, y, x+size*0.65, y)
+    end
+    if node.label:match("^HOLD") then
+        love.graphics.line(x-size*0.8, y+size+1, x+size*0.8, y+size+1)
+    end
+    love.graphics.setLineWidth(1)
 end
 
 local function format_beats(timing)
@@ -33,6 +62,10 @@ local function timeline_label_text(label)
         return ""
     end
     if label:match("^Special ") then
+        return label:gsub(" ", "\n", 1)
+    elseif label:match("^HOLD") then
+        return "Hold\n" .. label:sub(5)
+    elseif label:match("^Unmapped ") then
         return label:gsub(" ", "\n", 1)
     end
     return label
@@ -69,7 +102,7 @@ function M.build_nodes(entry)
             raw_gap_after = raw_gap_after,
             gap_after = gap_after,
             code = entry.steps[i],
-            label = format.step_display_name(entry.steps[i]),
+            label = format.step_editor_display_name(entry.steps[i]),
             color = color_for_code(entry.steps[i], rescue),
         }
         if i <= #entry.hits then
@@ -110,6 +143,15 @@ function M.start_delay_text(entry)
     return "Start delay: 0t. First step is shown at 0t."
 end
 
+function M.viewport(entry, view)
+    view = view or {}
+    local total = math.max(1, entry and format.total_ticks(entry.timing) or 1)
+    local zoom = math.max(1, math.min(16, view.zoom or 1))
+    local span = math.min(total, math.max(12, total / zoom))
+    local first = math.max(0, math.min(total - span, view.first_tick or 0))
+    return {first=first, last=first+span, span=span, total=total, zoom=total/span}
+end
+
 function M.draw(rect, entry, selected_step_index, options)
     options = options or {}
 
@@ -119,6 +161,7 @@ function M.draw(rect, entry, selected_step_index, options)
         hits = {},
         plot = nil,
         nodes = {},
+        view_hits = {},
     }
 
     if not entry then
@@ -163,14 +206,32 @@ function M.draw(rect, entry, selected_step_index, options)
     }
     render.plot = plot
 
+    local view = M.viewport(entry, options.view)
+    render.view = view
+    local toolbar_x = rect.x + 20
+    for _, button in ipairs({{"zoom_out", "-", 30, view.zoom<=1},
+        {"fit", "Fit", 40, false}, {"zoom_in", "+", 30, view.span<=12 or view.zoom>=16},
+        {"pan_left", "<", 30, view.first<=0}, {"pan_right", ">", 30, view.last>=total_ticks}}) do
+        local box = {x=toolbar_x, y=rect.y+60, w=button[3], h=24}
+        widgets.draw_button(box, button[2], {font=theme.font("tiny"), disabled=button[4]})
+        render.view_hits[#render.view_hits+1] = {kind=button[1],rect=box,disabled=button[4]}
+        toolbar_x = toolbar_x + button[3] + 4
+    end
+    love.graphics.setFont(theme.font("tiny"))
+    love.graphics.setColor(theme.colors.text_dim)
+    love.graphics.printf(string.format("%gx | %g-%gt", view.zoom, view.first, view.last),
+        toolbar_x+4, rect.y+63, math.max(1,rect.x+rect.w-toolbar_x-16), "left")
+
     local baseline_y = plot.y + plot.h * 0.62
-    local scale = plot.w / total_ticks
+    local scale = plot.w / view.span
     render.scale = scale
-    local start_x = plot.x + math.min(start_delay, total_ticks) * scale
+    local start_x = plot.x + (math.min(start_delay, view.last)-view.first) * scale
+    local old_scissor = {love.graphics.getScissor()}
+    love.graphics.intersectScissor(rect.x+8, plot.y-10, rect.w-16, plot.h+36)
 
     love.graphics.setColor((invalid_final and theme.colors.danger or theme.colors.track)[1], (invalid_final and theme.colors.danger or theme.colors.track)[2], (invalid_final and theme.colors.danger or theme.colors.track)[3], 1)
     love.graphics.rectangle("fill", plot.x, baseline_y - 4, plot.w, 8, 8, 8)
-    if start_delay > 0 then
+    if start_delay > view.first then
         local delay_rect = {
             x = plot.x,
             y = baseline_y - 8,
@@ -193,10 +254,10 @@ function M.draw(rect, entry, selected_step_index, options)
     love.graphics.setLineWidth(2)
     love.graphics.line(plot.x, plot.y + 6, plot.x, plot.y + plot.h - 6)
     love.graphics.setFont(theme.font("tiny"))
-    love.graphics.print("0t", plot.x + 4, plot.y + plot.h - 18)
+    love.graphics.print(string.format("%gt",view.first), plot.x + 4, plot.y + plot.h - 18)
 
-    for tick = 0, sequence_ticks, 6 do
-        local x = plot.x + tick * scale
+    for tick = math.ceil(view.first/6)*6, view.last, 6 do
+        local x = plot.x + (tick-view.first) * scale
         local is_major = (tick % format.CHART_TICKS_PER_BEAT) == 0
         local line_color = is_major and theme.colors.grid_major or theme.colors.grid_minor
         love.graphics.setColor(line_color[1], line_color[2], line_color[3], 1)
@@ -211,7 +272,7 @@ function M.draw(rect, entry, selected_step_index, options)
 
     if options.insert_preview then
         local preview_tick = math.max(0, math.min(options.insert_preview.tick or 0, total_ticks))
-        local preview_x = plot.x + preview_tick * scale
+        local preview_x = plot.x + (preview_tick-view.first) * scale
         local preview_color = options.insert_preview.color or theme.colors.amber
         love.graphics.setColor(preview_color[1], preview_color[2], preview_color[3], 0.9)
         love.graphics.setLineWidth(2)
@@ -256,7 +317,8 @@ function M.draw(rect, entry, selected_step_index, options)
     love.graphics.setLineWidth(1)
     for i = 1, #nodes do
         local node = nodes[i]
-        local x = plot.x + node.tick * scale
+        if node.tick >= view.first and node.tick <= view.last then
+        local x = plot.x + (node.tick-view.first) * scale
         local y = baseline_y
         local is_selected = selected_step_index == i
         local active = options.playhead_tick and options.playhead_tick >= node.tick
@@ -266,7 +328,7 @@ function M.draw(rect, entry, selected_step_index, options)
         local label_text = timeline_label_text(node.label)
         local label_h = label_text:find("\n", 1, true) and 34 or 24
         local label_rect = {
-            x = x - 34,
+            x = math.max(rect.x+8,math.min(x-34,rect.x+rect.w-76)),
             y = y + ((i % 2 == 0) and 20 or -(label_h + 24)),
             w = 68,
             h = label_h,
@@ -284,6 +346,7 @@ function M.draw(rect, entry, selected_step_index, options)
             border = ring,
             radius = 6,
         })
+        draw_command_symbol(node, x, y, is_selected and 6 or 5)
         love.graphics.setColor(ring[1], ring[2], ring[3], 0.45)
         love.graphics.line(x, baseline_y - 18, x, label_rect.y + ((label_rect.y > y) and 0 or label_rect.h))
 
@@ -322,20 +385,29 @@ function M.draw(rect, entry, selected_step_index, options)
             label_rect = label_rect,
         }
         render.hits[#render.hits + 1] = hit
+        end
     end
 
     if options.playhead_tick then
-        local cursor = plot.x + math.max(0, math.min(total_ticks, options.playhead_tick)) * scale
+        local cursor = plot.x + (options.playhead_tick-view.first) * scale
+        if options.playhead_tick >= view.first and options.playhead_tick <= view.last then
         love.graphics.setColor(theme.colors.accent)
         love.graphics.setLineWidth(2)
         love.graphics.line(cursor, plot.y - 10, cursor, plot.y + plot.h)
         love.graphics.setLineWidth(1)
+        end
     end
+    love.graphics.setScissor(unpack(old_scissor))
     return render
 end
 
+function M.point_in_plot(render, x, y)
+    return render and render.plot and x >= render.rect.x+8 and x <= render.rect.x+render.rect.w-8
+        and y >= render.plot.y-10 and y <= render.rect.y+render.rect.h-8
+end
+
 function M.hit_test(render, x, y)
-    if not render then
+    if not M.point_in_plot(render, x, y) then
         return nil, nil
     end
 
@@ -355,7 +427,7 @@ function M.tick_from_x(render, x)
 
     local plot = render.plot
     local clamped = math.max(plot.x, math.min(x, plot.x + plot.w))
-    return (clamped - plot.x) / render.scale
+    return (render.view and render.view.first or 0) + (clamped - plot.x) / render.scale
 end
 
 return M

@@ -26,6 +26,9 @@ end
 function M.relative(path)
     assert(type(path)=='string' and not path:find('\0',1,true),'Invalid chart path.')
     path=path:gsub('\\','/'):lower()
+    -- This specific shared root chart was matched in the English mode's memory.
+    -- Other root report charts still cannot enter an English project.
+    if path=='r01_sh.bin' then return path end
     local suffix=path:match('^afs_english/r[1-6][1-4]_sh(%d*)%.bin$')
     assert(suffix=='' or suffix=='0' or suffix=='2' or suffix=='20',
         'Projects support English report charts from afs_english only.')
@@ -64,7 +67,8 @@ end
 
 function M.capture(root,sessions,selection,report_number)
     local document={format='sc5-visual-project',version=1,language='English',files={},
-        report=integer(report_number or 1,1,6,'report number')}
+        report=report_number=='dance' and 'dance' or integer(report_number or 1,1,6,'report number')}
+    if report_number=='dance' then document.mode='ulala-dance' end
     local seen={}
     for _,session in ipairs(sessions) do
         local relative=M.relative_to(root,session.current_file_path)
@@ -110,7 +114,12 @@ function M.restore(text,root,reader)
     assert(type(document)=='table' and document.format=='sc5-visual-project' and document.version==1,
         'Unsupported project format or version.')
     assert(document.language=='English','This editor opens English projects only.')
-    integer(document.report,1,6,'report number')
+    if document.report=='dance' then
+        assert(document.mode=='ulala-dance','Invalid Dance mode identity in project.')
+    else
+        integer(document.report,1,6,'report number')
+        assert(document.mode==nil,'Invalid mode identity in report project.')
+    end
     root=(root or ''):gsub('\\','/'):gsub('/+$','')
     assert(root~='','Choose the game installation in Settings before opening a project.')
     local sessions,seen={},{}
@@ -136,7 +145,7 @@ function M.restore(text,root,reader)
         -- Exercise rebuilding before committing any restored app state.
         rebuild.apply_mods(buffer,entries,mods)
         sessions[#sessions+1]={current_file_path=path,current_file_name=relative:match('[^/]+$'),
-            current_file_dir=root..'/afs_english',current_buffer=buffer,entries=entries,
+            current_file_dir=path:match('^(.*)/[^/]+$'),current_buffer=buffer,entries=entries,
             entry_lookup=lookup,mods=mods,drafts={},undo_stack={},redo_stack={}}
     end
     if document.selection then

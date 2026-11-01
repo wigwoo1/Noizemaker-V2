@@ -17,7 +17,9 @@ local playback = require("core.playback")
 local music = require("core.music")
 local project = require("core.project")
 local exporter = require("core.export")
+local game_install = require('core.game_install')
 local route = require("core.route")
+local score = require("core.score")
 local playback_bar = require("ui.playback_bar")
 
 local App = {}
@@ -457,7 +459,12 @@ local function style_for_move_button(move, is_armed)
         style.hover_fill = { 0.35, 0.24, 0.08, 1.0 }
         style.border = theme.colors.amber
         style.text_color = theme.colors.amber
-    elseif move.label == "CHU" or move.label == "HEY" or move.label == "HOLDCHU" or move.label == "HOLDHEY" then
+    elseif move.label == "HEY" or move.label == "HOLDHEY" then
+        style.fill = {0.20, 0.27, 0.12, 1.0}
+        style.hover_fill = {0.27, 0.35, 0.16, 1.0}
+        style.border = theme.colors.hey
+        style.text_color = theme.colors.hey
+    elseif move.label == "CHU" or move.label == "HOLDCHU" then
         style.fill = theme.colors.move_pink_fill
         style.hover_fill = theme.colors.move_pink_hover
         style.border = theme.colors.move_pink_border
@@ -467,6 +474,12 @@ local function style_for_move_button(move, is_armed)
         style.hover_fill = theme.colors.move_blue_hover
         style.border = theme.colors.move_blue_border
         style.text_color = { 0.62, 0.83, 1.0, 1.0 }
+    end
+
+    local direction_color = theme.colors[move.label:gsub("^HOLD", ""):lower()]
+    if move.label:match("UP$") or move.label:match("DOWN$")
+        or move.label:match("LEFT$") or move.label:match("RIGHT$") then
+        style.border, style.text_color = direction_color, direction_color
     end
 
     if is_armed then
@@ -490,6 +503,7 @@ function App.new()
         palette_mode = "place",
         palette_drag = nil,
         timeline_render = nil,
+        timeline_view = {zoom=1, first_tick=0},
         hovered_button = nil,
         hovered_menu_button = nil,
         status_text = "Ready.",
@@ -524,6 +538,8 @@ function App.new()
         drag = nil,
         pending_insert = nil,
         inspector_hits = {},
+        inspector_scroll = 0,
+        inspector_scroll_max = 0,
         controls_hits = {},
         modal_hits = {},
         menu_hits = {},
@@ -572,8 +588,123 @@ end
 
 function App:update(dt)
     playback.update(self.playback)
+    self:update_report_playback(dt or 0)
     self:update_animations(dt or 0)
     self:update_hover_state()
+end
+
+function App:update_report_playback(dt)
+    local state=self.playback
+    if state.report_job then
+        state.report_job:step(0.006)
+        if state.report_job.status=='done' then
+            local job=state.report_job
+            local ok,source=pcall(love.audio.newSource,job.virtual_path,'stream')
+            if ok then
+                state.source=source;state.plan=job.plan;state.report_cache=job;state.report_job=nil
+                state.source:setLooping(state.looping);state.source:play();state.playing=true;state.position=0
+                self.reports_tab.report_preparing=false
+                local title=state.plan.title or report.title(state.plan.report or 1)
+                self.status_text=((state.plan.report==4 or state.plan.report==5) and state.plan.voices_enabled) and
+                    string.format('%s music and %d recorded English calls playing; %d unavailable or edited calls muted. Audible alignment remains provisional.',
+                        title,#state.plan.events,#state.plan.omitted_voice_events) or
+                    (state.plan.voices_enabled and #state.plan.omitted_voice_events>0) and
+                    (title..' music and mapped English calls playing; unidentified calls were skipped.') or
+                    state.plan.voices_enabled and (state.plan.response_timing_checked and
+                        (title..' responses checked against the stock recording (60 ms tolerance). Ending is provisional.')
+                        or (title..' music and English calls playing; alignment still needs checking.')) or
+                    (title..' music playing; English command calls are muted.')
+            else
+                job:dispose();state.report_job=nil;state.mode=nil;state.plan=nil
+                self.reports_tab.report_preparing=false;self.reports_tab.playing_report=false
+                self.status_text='Could not open the report audio cache: '..tostring(source)
+            end
+        elseif state.report_job.status=='error' then
+            local message=state.report_job.message
+            state.report_job:dispose();state.report_job=nil;state.mode=nil;state.plan=nil
+            self.reports_tab.report_preparing=false;self.reports_tab.playing_report=false
+            self.status_text='Report audio could not be prepared: '..tostring(message)
+        end
+    end
+    if state.mode~='report' or not state.plan then return end
+    if state.source and state.playing then
+        local position=state.source:tell('seconds')
+        -- Streamed Sources can report elapsed time across loop iterations.
+        -- Keep phrase selection and the playhead on the current report lap.
+        if state.looping and state.plan.duration>0 then position=position%state.plan.duration end
+        if not state.source:isPlaying() and not state.looping then
+            state.playing=false;state.position=state.plan.duration;self.reports_tab.playing_report=false
+        else state.position=position end
+    end
+    local phrase=score.locate(state.plan,state.position)
+    if not phrase then return end
+    state.report_tick=state.position>=phrase.response and state.position<phrase.ending and
+        (state.position-phrase.response)/phrase.seconds_per_tick or nil
+    local row=phrase.row
+    state.report_order=row.event.order
+    self.recorded_route_order=row.event.order
+    if self.current_file_path~=row.file.path or not self.selected_entry or self.selected_entry.name~=row.entry.name then
+        self:open_report_entry(row.file,row.entry,true,row.event.order)
+    end
+end
+
+function App:report_preview_entry(file,entry)
+    local session=self.current_file_path==file.path and self or self.file_sessions[file.path]
+    local work=session and ((session.drafts or {})[entry.name] or (session.mods or {})[entry.name])
+    if not work then return entry end
+    local validation=self:validate_work(entry,work)
+    assert(validation.ok,'Fix the edited phrase before whole-level playback: '..entry.name)
+    return self:build_preview_entry(entry,work)
+end
+
+function App:start_report_playback(with_voices, skip_unmapped_voices)
+    local loaded=self.reports_tab.report
+    if not loaded then self:load_report(1);loaded=self.reports_tab.report end
+    local title=report.title(loaded and loaded.number or 1)
+    if not loaded or not loaded.cpu_route then self.status_text='The recorded '..title..' route is unavailable.';return end
+    local ok,plan=pcall(score.plan,loaded,function(file,entry)return self:report_preview_entry(file,entry)end,true,with_voices,skip_unmapped_voices)
+    if ok and with_voices and not skip_unmapped_voices then
+        local unmapped
+        for code in pairs(plan.unmapped_commands or {}) do unmapped=code;break end
+        if unmapped then
+            self:show_modal({title='Some English calls are not mapped yet',kind='info',dismiss_id='cancel',
+                message=string.format('%s has %d call(s) using command 0x%02X, whose English sample is not identified. You can play the music with every recognized English call, skipping only those unknown calls, or play music alone.',title,#(plan.unmapped_voice_events or {}),unmapped),
+                buttons={{id='cancel',label='Cancel'},{id='music',label='Play music only'},{id='mapped',label='Play mapped calls',primary=true}},
+                on_result=function(id)
+                    if id=='mapped' then self:start_report_playback(true,true)
+                    elseif id=='music' then self:start_report_playback(false) end
+                end})
+            return
+        end
+    end
+    if not ok then
+        self.status_text='Could not prepare '..title..' playback: '..tostring(plan)
+        return
+    end
+    local rows=loaded.cpu_route
+    local first=rows[1]
+    if not first then self.status_text=title..' has no recorded phrases.';return end
+    self:open_report_entry(first.file,first.entry,false,first.event.order)
+    local folder='report-audio-cache'
+    local folder_ok,folder_created=pcall(love.filesystem.createDirectory,folder)
+    if not folder_ok or not folder_created then
+        self.status_text='Could not create the report audio cache. Check that Noizemaker can write to its save folder.'
+        return
+    end
+    local virtual,absolute
+    repeat
+        self.report_cache_counter=(self.report_cache_counter or 0)+1
+        virtual=folder..'/report'..loaded.number..'-'..tostring(os.time())..'-'..self.report_cache_counter..'.wav'
+    until not love.filesystem.getInfo(virtual)
+    absolute=love.filesystem.getSaveDirectory()..'/'..virtual
+    local job=score.new_job(plan,self.game_root,absolute)
+    job.virtual_path=virtual
+    self.playback.mode='report';self.playback.plan=plan;self.playback.report_job=job
+    self.playback.position=0;self.playback.playing=false;self.playback.report_tick=nil
+    self.playback.report_order=first.event.order
+    self.reports_tab.report_preparing=true;self.reports_tab.playing_report=true
+    self.status_text='Preparing '..title..' music in the background…'
+    self:switch_view('editor')
 end
 
 function App:update_animations(dt)
@@ -1129,11 +1260,13 @@ function App:update_draft_from_current()
     }
 end
 
-function App:load_work_for_entry(entry)
-    playback.stop(self.playback, true)
-    self.playback.range_start, self.playback.range_end, self.playback.bpm = nil, nil, nil
+function App:load_work_for_entry(entry, preserve_report_audio)
+    self.inspector_scroll, self.inspector_scroll_max = 0, 0
+    if not preserve_report_audio then playback.stop(self.playback, true) end
+    if not preserve_report_audio then self.playback.range_start, self.playback.range_end, self.playback.bpm = nil, nil, nil end
     self.palette_mode, self.palette_drag = "place", nil
     self.selected_entry = entry
+    self.recorded_route_order=entry.route and entry.route.order or nil
     self.selected_step_index = nil
     self.undo_stack = {}
     self.redo_stack = {}
@@ -1157,23 +1290,26 @@ function App:load_work_for_entry(entry)
     end
 
     self.current_dirty = not self:work_equals_original(entry, self.current_work)
+    self.timeline_view = {zoom=#self.current_work.steps>12 and 4 or 1, first_tick=0}
     self:update_draft_from_current()
 end
 
 function App:rebuild_tree_groups()
+    require('core.dance').annotate(self.entries,self.current_file_path,self.current_buffer)
     self.tree.route_available=route.annotate(self.entries,self.current_file_path,self.current_buffer)~=nil
     self.tree.report_label, self.tree.section_label = report.file_context(self.current_file_path)
     local groups = tree.build_groups(self.entries, self.current_file_path, self.reports_paths, self.tree.collapse_state)
     tree.set_groups(self.tree, groups)
 end
 
-function App:open_file(path)
+function App:open_file(path, preserve_report_audio)
     if not path or path == "" then
         return
     end
 
-    local data = read_binary(path)
-    if not data then
+    local opened,data = pcall(self.chart_source,self,path)
+    if not opened or not data then
+        self:show_error('Open failed',opened and ('Could not read '..basename(path)) or tostring(data))
         self.status_text = "Failed to read file: " .. basename(path)
         return
     end
@@ -1194,7 +1330,7 @@ function App:open_file(path)
         end
         if previous~=self then
             self:remember_current_file()
-            self:restore_file_session(previous)
+            self:restore_file_session(previous, preserve_report_audio)
         end
         self.status_text="Returned to "..basename(path)..". Existing edits preserved."
         return
@@ -1220,7 +1356,7 @@ function App:open_file(path)
     self:add_recent_file(path)
     self:rebuild_tree_groups()
     if self.entries[1] then
-        self:load_work_for_entry(self.entries[1])
+        self:load_work_for_entry(self.entries[1], preserve_report_audio)
     else
         self.selected_entry = nil
         self.current_work = nil
@@ -1230,19 +1366,19 @@ function App:open_file(path)
     self.status_text = string.format("Loaded %s (%d entries).", self.current_file_name, #self.entries)
 end
 
-function App:select_entry(entry)
-    self:load_work_for_entry(entry)
+function App:select_entry(entry, preserve_report_audio)
+    self:load_work_for_entry(entry, preserve_report_audio)
 end
 
 function App:load_report(number)
-    local ok, result = pcall(report.load, self.game_root, number)
+    local ok, result = pcall(report.load, self.game_root, number,function(path)return self:chart_source(path)end)
     self.reports_tab.number = number
     self.reports_tab.scroll = 0
     self.reports_tab.query = ""
     self.reports_tab.report = ok and result or nil
     self.reports_tab.error = not ok and tostring(result) or nil
-    self.status_text = ok and (result.cpu_route and "Loaded English Report 1 with its recorded CPU route. Other branches differ." or
-        ("Loaded English Report " .. number .. ". Gameplay order remains unverified.")) or tostring(result)
+    self.status_text = ok and (result.cpu_route and ("Loaded English " .. report.title(number) .. " with its recorded CPU route. Other branches differ.") or
+        ("Loaded English " .. report.title(number) .. ". Gameplay order remains unverified.")) or tostring(result)
 end
 
 function App:command_audio_bank()
@@ -1268,12 +1404,30 @@ function App:prepare_playback()
     if state.signature == signature and state.source then return true end
     local ok, result = pcall(function()
         local bank = self:command_audio_bank()
-        local plan = playback.plan(entry, state.bpm, state.range_start, state.range_end)
+        local voice_context=require('core.voice_context').resolve(entry,self.current_file_path,self.current_buffer,bank.stem)
+        local plan = playback.plan(entry, state.bpm, state.range_start, state.range_end, bank.stem,voice_context)
+        local question_voice=bank.stem:match('^r2[1-3]$')
+            and require('core.question_voice_report2') or require('core.question_voice')
+        local question_event=question_voice.event(self.selected_entry,entry,self.current_file_path,
+            self.current_buffer,bank.stem,plan)
+        if question_event then
+            local bank_key=question_voice.bank_key and question_voice.bank_key(question_event) or 'recorded'
+            local key=tostring(self.game_root)..'/'..bank.stem..'/question/'..bank_key
+            state.banks[key]=state.banks[key] or question_voice.bank(self.game_root,bank.stem,question_event)
+            local combined,reason=question_voice.extend(plan,state.banks[key],bank,question_event)
+            if combined then bank=combined else question_event=nil;plan.warnings[#plan.warnings+1]=reason end
+        end
         local background, music_note
         if state.music_enabled then
             local stem=self.current_file_name:lower():match("^(r%d%d)")
-            local success, sample, reason=pcall(music.prepare,self.game_root,stem,self.selected_entry,
-                entry,plan,self.current_buffer,state.music_cache)
+            local success,sample,reason
+            if question_event then
+                success,sample,reason=pcall(music.prepare_full_question,self.game_root,stem,
+                    self.selected_entry,entry,plan,question_event,state.music_cache)
+            else
+                success,sample,reason=pcall(music.prepare,self.game_root,stem,self.selected_entry,
+                    entry,plan,self.current_buffer,state.music_cache)
+            end
             if success then background,music_note=sample,reason
             else music_note="Music could not be loaded; English voice preview is available." end
         else music_note="Music is off." end
@@ -1292,22 +1446,66 @@ end
 
 function App:audition_command(code)
     if not love.audio then return end
-    local command = game_audio.command_for_code(code)
-    if not command then return end
     local ok, err = pcall(function()
-        local sample = assert(self:command_audio_bank().samples[command], "No sample for " .. command)
+        local bank = self:command_audio_bank()
+        local entry=self:current_preview_entry()
+        local context=require('core.voice_context').resolve(entry,self.current_file_path,self.current_buffer,bank.stem)
+        local tick=entry and entry.start_delay or 0
+        if entry then for i=1,(self.selected_step_index or 1)-1 do tick=tick+(entry.hits[i] or 0) end end
+        local command = game_audio.command_for_code(code, bank.stem,context,tick)
+        if not command then return end
+        local sample = assert(bank.samples[command], "No sample for " .. command)
         if not sample.source then
             sample.source = love.audio.newSource(love.sound.newSoundData(love.filesystem.newFileData(sample.wav, "command.wav")))
         end
         if self.playback.audition then self.playback.audition:stop() end
         self.playback.audition = sample.source:clone()
         self.playback.audition:play()
+        if bank.stem=='r01' then
+            self.status_text=command:match('^DANCE_')
+                and "Dance voice selected from checked scripts; audible sync is unverified."
+                or "Provisional standard English voice; this Dance command's bank context is unavailable."
+        elseif command:match('^R42_HOLD_') then
+            self.status_text='Original Report 4 held-call sample; audible timing and hold stretching/release are unverified.'
+        elseif command=='R43_HOLD_CHU' then
+            self.status_text='Original Peace Carrier held Chu; audible timing and hold stretching/release are unverified.'
+        elseif command=='R43_HOLD_HEY' then
+            self.status_text='Peace Carrier held Hey selects a native dummy take; a voiced held Hey is not verified.'
+        end
     end)
     if not ok then self.status_text = "Command replaced; audio preview unavailable: " .. tostring(err) end
 end
 
 function App:playback_action(kind, fraction)
     local state, entry = self.playback, self:current_preview_entry()
+    if state.mode=='report' then
+        if kind=='stop' then
+            playback.stop(state,true);self.reports_tab.playing_report=false;self.reports_tab.report_preparing=false
+            self.status_text='Whole-level playback stopped.';return
+        elseif kind=='loop' then
+            state.looping=not state.looping;if state.source then state.source:setLooping(state.looping) end;return
+        elseif kind=='play' then
+            if state.report_job then return end
+            if state.source then
+                if state.playing then state.source:pause();state.playing=false
+                else if state.position>=state.plan.duration then state.position=0 end;state.source:seek(state.position,'seconds');state.source:play();state.playing=true;self.reports_tab.playing_report=true end
+            end
+            return
+        elseif kind=='seek' and state.source then
+            state.position=math.max(0,math.min(0.9999,fraction or 0))*state.plan.duration
+            state.source:seek(state.position,'seconds');if state.playing then state.source:play() end;return
+        elseif kind=='phrase_preview' then
+            playback.stop(state,true);self.reports_tab.playing_report=false;self.reports_tab.report_preparing=false
+            return
+        elseif (kind=='previous_phrase' or kind=='next_phrase') and state.source then
+            local located=score.locate(state.plan,state.position)
+            local current=located and located.row.event.order or 1
+            local rows=state.plan.phrases;local wanted=math.max(1,math.min(#rows,current+(kind=='next_phrase' and 1 or -1)))
+            local phrase=rows[wanted];state.position=phrase.response;state.source:seek(state.position,'seconds')
+            if state.playing then state.source:play() end;self:open_report_entry(phrase.row.file,phrase.row.entry,true,phrase.row.event.order);return
+        end
+        return
+    end
     if not entry then return end
     if kind=='previous_phrase' or kind=='next_phrase' then
         self:navigate_cpu_route(kind=='next_phrase' and 1 or -1)
@@ -1381,30 +1579,44 @@ function App:playback_action(kind, fraction)
         state.source:seek(state.position, "seconds")
         if was_playing then state.source:play(); state.playing = true end
     elseif kind == "play" then
+        self.timeline_view.follow = true
         if state.position >= state.plan.duration then state.position = 0 end
         state.source:seek(state.position, "seconds")
         state.source:play()
         state.playing = true
-        self.status_text = state.plan.music and "English voice + response music. Alignment needs checking."
-            or (state.music_note or "English command preview.")
+        self.status_text = state.plan.question_duration and
+            (state.plan.music and 'Enemy question + Ulala response + music; audible sync is provisional.'
+                or 'Enemy question + Ulala response; music is unavailable or off.') or
+            (state.plan.music and (state.plan.music.timing_checked and
+            "English calls + music. Recorded timing checked (60 ms tolerance)."
+            or "English voice + response music. Alignment needs checking.")
+            or (state.music_note or "English command preview."))
+        if #state.plan.warnings>0 then self.status_text=self.status_text.." "..state.plan.warnings[1] end
+        if state.plan.question_unmapped_count and state.plan.question_unmapped_count>0 then
+            self.status_text=self.status_text.." "..state.plan.question_unmapped_count.." raw call(s) are silent."
+        end
+        if state.plan.question_bank_provisional then
+            self.status_text=self.status_text.." Enemy voice choice is provisional for this section."
+        end
     end
 end
 
 function App:navigate_cpu_route(direction)
     local current=self.selected_entry
     if not current or not current.route then self.status_text='Choose a recorded CPU-route phrase in Reports first.';return end
+    local number=current.dance and 'dance' or tonumber(current.route.file:match('/r([1-6])'))
     local level=self.reports_tab.report
-    if not level or level.number~=1 then self:load_report(1);level=self.reports_tab.report end
+    if not level or level.number~=number then self:load_report(number);level=self.reports_tab.report end
     local rows=level and level.cpu_route
     if not rows then self.status_text='Recorded CPU route is unavailable for these source files.';return end
-    local index=current.route.order
+    local index=self.recorded_route_order or current.route.order
     local row=rows[index]
     if not row or normalize_slashes(row.file.path):lower()~=normalize_slashes(self.current_file_path):lower() or row.entry.name~=current.name then
         self.status_text='Open the main CPU-route file in Reports to navigate this route.';return
     end
     local target=rows[index+direction]
     if not target then self.status_text=direction>0 and 'End of the recorded CPU route.' or 'Start of the recorded CPU route.';return end
-    self:open_report_entry(target.file,target.entry)
+    self:open_report_entry(target.file,target.entry,false,target.event.order)
     if self.selected_entry and self.selected_entry.name==target.entry.name and self.current_file_path==target.file.path then
         self.status_text='Recorded CPU route: phrase '..target.event.order..' of '..#rows..'. Other branches differ.'
     end
@@ -1424,10 +1636,10 @@ function App:remember_current_file()
     self.file_sessions[self.current_file_path]=session
 end
 
-function App:restore_file_session(session)
-    playback.stop(self.playback,true)
+function App:restore_file_session(session, preserve_report_audio)
+    if not preserve_report_audio then playback.stop(self.playback,true) end
     for _,key in ipairs(SESSION_FIELDS) do self[key]=session[key] end
-    if not self.selected_entry and self.entries[1] then self:load_work_for_entry(self.entries[1]) end
+    if not self.selected_entry and self.entries[1] then self:load_work_for_entry(self.entries[1], preserve_report_audio) end
     self:rebuild_tree_groups()
 end
 
@@ -1435,7 +1647,7 @@ function App:capture_project(only_report)
     self:update_draft_from_current()
     local sessions={}
     local function include(session)
-        return not only_report or (session.current_file_name or ''):lower():match('^r'..only_report..'[1-4]_sh')
+        return not only_report or report.belongs(session.current_file_name,only_report)
     end
     for path,session in pairs(self.file_sessions) do
         if path~=self.current_file_path and include(session) then sessions[#sessions+1]=session end
@@ -1447,24 +1659,91 @@ end
 
 function App:export_report_number()
     if self.active_view=='editor' then
+        if (self.current_file_name or ''):lower()=='r01_sh.bin' then return 'dance' end
         return tonumber((self.current_file_name or ''):lower():match('^r([1-6])[1-4]_sh')) or self.reports_tab.number
     end
     return self.reports_tab.number
 end
 
 function App:prepare_report_export(number)
-    return exporter.prepare(self:capture_project(number),self.game_root,number)
+    return exporter.prepare(self:capture_project(number),self.game_root,number,function(path)return self:chart_source(path)end)
+end
+
+function App:game_install_store()
+    if self.install_base then return self.install_base end
+    local base=love.filesystem.getSaveDirectory and love.filesystem.getSaveDirectory() or self.app_root
+    local root=normalize_slashes(self.game_root or ''):gsub('/+$',''):lower()
+    return base..'/game-edits/'..project.hash(root)
+end
+
+function App:chart_source(path)
+    return game_install.read_source(self.game_root,self:game_install_store(),path)
+end
+
+function App:prepare_game_apply(all_files)
+    local number=self:export_report_number()
+    local document
+    if all_files then document=self:capture_project(number)
+    else
+        self:update_draft_from_current()
+        document=project.capture(self.game_root,{self},{file=self.current_file_path,entry=self.selected_entry.name},number)
+    end
+    local exported=exporter.prepare(document,self.game_root,number,function(path)return self:chart_source(path)end,true)
+    return game_install.prepare(self.game_root,self:game_install_store(),exported)
+end
+
+function App:prompt_game_apply(all_files)
+    local ok,plan=pcall(self.prepare_game_apply,self,all_files)
+    if not ok then self:show_error('Apply to game',tostring(plan));return end
+    local names={};for _,file in ipairs(plan.files) do names[#names+1]=file.path end
+    self:show_modal({title=all_files and 'Apply All to game' or 'Apply file to game',dismiss_id='cancel',
+        message=string.format('%s: %d changed sequences in %d file(s).\n%s\n\nA verified backup is saved before replacing game files.\nStart the report or mode again after applying.\nYour project edits and undo history stay available.',
+            report.title(plan.report),plan.phrases,#plan.files,table.concat(names,'\n')),
+        buttons={{id='cancel',label='Cancel'},{id='apply',label='Apply to game',primary=true}},
+        on_result=function(id)
+            if id~='apply' then return end
+            local installed,result=pcall(game_install.install,plan)
+            if not installed then self:show_error('Apply failed',tostring(result));return end
+            self.status_text=string.format('Applied %d sequences in %d file(s) to the game. Start the report/mode again.',result.phrases,result.files)
+            self:show_info('Applied to game',self.status_text..'\nProject > Restore game restores the backed-up files.\nBackup: '..result.backup)
+        end})
+end
+
+function App:prompt_game_restore()
+    local store=self:game_install_store();local number=self:export_report_number()
+    local ok,plan=pcall(function()
+        local pending=game_install.pending(self.game_root,store)
+        if pending then return {recover=true,files=pending.files} end
+        return game_install.restore_plan(self.game_root,store,number)
+    end)
+    if not ok then self:show_error('Restore game files',tostring(plan));return end
+    local names={};for _,file in ipairs(plan.files) do names[#names+1]=file.path end
+    self:show_modal({title=plan.recover and 'Recover interrupted Apply' or 'Restore game files',dismiss_id='cancel',
+        message=(plan.recover and 'Restore the game files from before the interrupted Apply?\n' or
+            ('Restore backed-up game files for '..report.title(number)..'?\n'))..table.concat(names,'\n')..
+            '\n\nClose the game first. Your editor drafts and saved projects are kept.',
+        buttons={{id='cancel',label='Cancel'},{id='restore',label='Restore',primary=true}},
+        on_result=function(id)
+            if id~='restore' then return end
+            local restored,result=pcall(function()
+                if plan.recover then return game_install.recover(self.game_root,store) end
+                return game_install.install(plan)
+            end)
+            if not restored then self:show_error('Restore failed',tostring(result));return end
+            self.status_text='Game files restored. Start the report or mode again; editor drafts are preserved.'
+            self:show_info('Game files restored',self.status_text)
+        end})
 end
 
 function App:export_report(path,number)
     local ok,result=pcall(function()
         local plan=self:prepare_report_export(number)
-        local destination=exporter.write(plan,path,self.game_root)
+        local destination=exporter.write(plan,path,self.game_root,function(source)return self:chart_source(source)end)
         return {path=destination,count=#plan.files,manifest=plan.manifest}
     end)
     if not ok then return false,tostring(result) end
     self.last_export_path=result.path
-    self.status_text=string.format('Report %d exported: %d changed English files. Game files unchanged.',number,result.count)
+    self.status_text=string.format('%s exported: %d changed English files. Game files unchanged.',report.title(number),result.count)
     return true,result
 end
 
@@ -1479,16 +1758,16 @@ function App:prompt_report_export()
     for i=1,math.min(3,#plan.files) do names[i]=basename(plan.files[i].path) end
     local list=table.concat(names,', ')
     if #plan.files>3 then list=list..' + '..(#plan.files-3)..' more' end
-    self:show_modal({title='Export Report '..number,dismiss_id='cancel',
+    self:show_modal({title='Export '..report.title(number),dismiss_id='cancel',
         message=#plan.files..' changed English files: '..list..'\nA manifest lists every affected file and phrase.\nPaste a new folder path outside the game.\nThe destination folder must not exist yet.',
-        input={text=join_path(folder,'report-'..number..'-'..os.date('%Y%m%d-%H%M%S'))},
-        buttons={{id='cancel',label='Cancel'},{id='export',label='Export report',primary=true}},
+        input={text=join_path(folder,(number=='dance' and 'ulala-dance' or 'report-'..number)..'-'..os.date('%Y%m%d-%H%M%S'))},
+        buttons={{id='cancel',label='Cancel'},{id='export',label=number=='dance' and 'Export mode' or 'Export report',primary=true}},
         on_result=function(id,modal)
             if id~='export' then return true end
             local path=trim(modal.input.text):gsub('^"(.*)"$','%1')
             local success,result=self:export_report(path,number)
             if not success then modal.input.error=result;return false end
-            self:show_info('Report export complete',string.format('Report %d: %d changed English files and a manifest written.\n%s\nGame files remain unchanged.',number,result.count,result.path))
+            self:show_info(number=='dance' and 'Mode export complete' or 'Report export complete',string.format('%s: %d changed English files and a manifest written.\n%s\nGame files remain unchanged.',report.title(number),result.count,result.path))
             return true
         end})
 end
@@ -1514,8 +1793,9 @@ function App:save_project(path)
 end
 
 function App:stage_project(path)
-    local restored=project.load(path,self.game_root)
-    restored.report=report.load(self.game_root,restored.document.report)
+    local reader=function(source)return self:chart_source(source)end
+    local restored=project.load(path,self.game_root,reader)
+    restored.report=report.load(self.game_root,restored.document.report,reader)
     return restored
 end
 
@@ -1569,7 +1849,7 @@ function App:prompt_project_save(save_as,on_saved)
     if self.project_path and not save_as then return save(self.project_path) end
     local folder=join_path(self.app_root,"projects")
     platform.ensure_dir(folder)
-    local suggested=self.project_path or join_path(folder,"report-"..self.reports_tab.number..".sc5project")
+    local suggested=self.project_path or join_path(folder,(self.reports_tab.number=='dance' and 'ulala-dance' or 'report-'..self.reports_tab.number)..'.sc5project')
     self:show_modal({title="Save project",dismiss_id="cancel",
         message="Save all open English chart edits together.\nGame files stay unchanged.\nPaste a full path ending in .sc5project.",
         input={text=suggested},
@@ -1620,14 +1900,16 @@ function App:show_project_menu()
     playback.stop(self.playback)
     self:show_modal({title="Project",dismiss_id="cancel",
         message="Save and reopen edits across all your open English chart files.\nCurrent project: "..(self.project_path and basename(self.project_path) or "not saved yet")..
-            "\nExport report: changed English files for Report "..self:export_report_number()..'.'..
+            "\nExport: changed English files for "..report.title(self:export_report_number())..'.'..
             "\nCtrl+S: save | Ctrl+Shift+S: save as | Ctrl+O: open",
         buttons={{id="cancel",label="Close"},{id="open",label="Open"},{id="save_as",label="Save as"},
-            {id='export',label='Export report'},{id="save",label="Save",primary=true}},
+            {id='restore_game',label='Restore game'},
+            {id='export',label=self:export_report_number()=='dance' and 'Export mode' or 'Export report'},{id="save",label="Save",primary=true}},
         on_result=function(id)
             if id=="open" then self:prompt_project_open()
             elseif id=="save_as" then self:prompt_project_save(true)
             elseif id=='export' then self:prompt_report_export()
+            elseif id=='restore_game' then self:prompt_game_restore()
             elseif id=="save" then self:prompt_project_save(false) end
         end})
 end
@@ -1645,27 +1927,36 @@ function App:request_quit()
     return true
 end
 
-function App:open_report_entry(file, entry)
-    playback.stop(self.playback, true)
-    self.playback.range_start, self.playback.range_end, self.playback.bpm = nil, nil, nil
+function App:open_report_entry(file, entry, preserve_report_audio, route_order)
+    local same=self.current_file_path==file.path and self.selected_entry and self.selected_entry.name==entry.name
+    local previous_order=self.recorded_route_order
+    if not preserve_report_audio then playback.stop(self.playback, true) end
+    if not preserve_report_audio then self.playback.range_start, self.playback.range_end, self.playback.bpm = nil, nil, nil end
     if self.current_file_path ~= file.path then
         if self.current_file_path then
             self:remember_current_file()
         end
         local session = self.file_sessions[file.path]
         if session then
-            if read_binary(file.path) ~= session.current_buffer then
+            local read_ok,buffer=pcall(self.chart_source,self,file.path)
+            if not read_ok or buffer ~= session.current_buffer then
                 self:show_error("File changed", "This chart changed on disk. Your draft is still in memory. Export it before reloading the changed source.")
                 return
             end
-            self:restore_file_session(session)
+            self:restore_file_session(session, preserve_report_audio)
         else
-            self:open_file(file.path)
+            self:open_file(file.path, preserve_report_audio)
         end
     end
     if self.current_file_path ~= file.path then return end
     local target = self.entry_lookup[entry.name]
-    if target and self.selected_entry ~= target then self:select_entry(target) end
+    if target and self.selected_entry ~= target then self:select_entry(target, preserve_report_audio) end
+    self.recorded_route_order=route_order or (same and previous_order) or (target and target.route and target.route.order)
+    if target and target.route_visits and self.recorded_route_order then
+        local found=false
+        for _,visit in ipairs(target.route_visits) do if visit.order==self.recorded_route_order then found=true end end
+        if not found then self.recorded_route_order=target.route.order end
+    end
     self:switch_view("editor")
     self.status_text = file.section .. " / " .. report.phrase_label(entry) .. " [English]"
 end
@@ -1684,7 +1975,11 @@ end
 
 function App:switch_view(view_name)
     local target = view_name or "editor"
-    if target ~= "editor" then playback.stop(self.playback) end
+    if target ~= "editor" then
+        local report_audio=self.playback.mode=='report'
+        playback.stop(self.playback,report_audio)
+        if report_audio then self.reports_tab.playing_report=false;self.reports_tab.report_preparing=false end
+    end
     self.palette_drag = nil
     if target == self.active_view and not self.view_transition then
         return
@@ -1937,11 +2232,21 @@ function App:draw_view_content(view_name)
 
     tree.draw(self.tree, self.layout.left, self.selected_entry, self:entry_marker_map())
     self:draw_controls()
-    self.timeline_render = timeline.draw(self.layout.timeline, self:current_preview_entry(), self.selected_step_index, {
+    local shown_entry = self:current_preview_entry()
+    local shown_tick = playback.tick(self.playback)
+    if shown_tick and self.playback.playing and self.timeline_view.follow ~= false then
+        local view = timeline.viewport(shown_entry, self.timeline_view)
+        if shown_tick < view.first or shown_tick > view.last then
+            self.timeline_view.first_tick = math.max(0,math.min(view.total-view.span,
+                math.floor(shown_tick/view.span)*view.span))
+        end
+    end
+    self.timeline_render = timeline.draw(self.layout.timeline, shown_entry, self.selected_step_index, {
         validation = self.current_validation,
         drag_index = self.drag and self.drag.index or nil,
         insert_preview = self:insert_preview_info(),
-        playhead_tick = playback.tick(self.playback),
+        playhead_tick = shown_tick,
+        view = self.timeline_view,
     })
     self:draw_inspector()
 end
@@ -2246,10 +2551,11 @@ function App:buttons()
     local top = self.layout.toolbar
     return {
         open = { x = top.x + 16, y = top.y + 7, w = 82, h = 26, label = "Open" },
-        apply = { x = top.x + 106, y = top.y + 7, w = 82, h = 26, label = "Apply" },
-        patch = { x = top.x + 196, y = top.y + 7, w = 82, h = 26, label = "Patch" },
-        settings = { x = top.x + 286, y = top.y + 7, w = 100, h = 26, label = "Settings" },
-        reports = { x = top.x + 394, y = top.y + 7, w = 100, h = 26, label = "Reports" },
+        apply = { x = top.x + 106, y = top.y + 7, w = 88, h = 26, label = "Apply File" },
+        apply_all = { x = top.x + 202, y = top.y + 7, w = 88, h = 26, label = "Apply All" },
+        patch = { x = top.x + 298, y = top.y + 7, w = 82, h = 26, label = "Patch" },
+        settings = { x = top.x + 388, y = top.y + 7, w = 100, h = 26, label = "Settings" },
+        reports = { x = top.x + 496, y = top.y + 7, w = 100, h = 26, label = "Reports" },
     }
 end
 
@@ -2422,6 +2728,9 @@ function App:draw_editor_toolbar()
     widgets.draw_button(buttons.apply, buttons.apply.label, {
         hovered = self.hovered_button == "apply",
         disabled = self.active_view ~= "editor" or not self.selected_entry,
+    })
+    widgets.draw_button(buttons.apply_all,buttons.apply_all.label,{
+        hovered=self.hovered_button=='apply_all',disabled=not self.current_buffer,
     })
     widgets.draw_button(buttons.patch, buttons.patch.label, {
         hovered = self.hovered_button == "patch",
@@ -2891,6 +3200,15 @@ function App:push_undo_snapshot(snapshot)
     self.redo_stack = {}
 end
 
+local function stop_playback_for_edit(app)
+    local report_playback=app.playback.mode=='report' or app.playback.report_job~=nil
+    playback.stop(app.playback,true)
+    if report_playback then
+        app.reports_tab.playing_report=false
+        app.reports_tab.report_preparing=false
+    end
+end
+
 function App:accept_candidate(candidate, new_selected_step, options)
     options = options or {}
     local validation = self:validate_work(self.selected_entry, candidate)
@@ -2906,7 +3224,7 @@ function App:accept_candidate(candidate, new_selected_step, options)
         self:push_undo_snapshot(snapshot_from_work(self.current_work))
     end
 
-    playback.stop(self.playback, true)
+    stop_playback_for_edit(self)
     self.current_work = candidate
     self.current_validation = validation
     if new_selected_step ~= nil then
@@ -3284,7 +3602,7 @@ function App:insert_preview_info()
     end
 
     local mx, my = love.mouse.getPosition()
-    if not widgets.point_in_rect(mx, my, self.layout.timeline) then
+    if not timeline.point_in_plot(self.timeline_render, mx, my) then
         return nil
     end
 
@@ -3297,10 +3615,10 @@ function App:insert_preview_info()
         x = self.layout.timeline.x + 28,
         w = self.layout.timeline.w - 56,
     }
-    local total_ticks = math.max(format.total_ticks(preview.timing), 1)
-    local scale = plot.w / total_ticks
+    local view = timeline.viewport(preview, self.timeline_view)
+    local scale = plot.w / view.span
     local clamped_x = math.max(plot.x, math.min(mx, plot.x + plot.w))
-    local display_tick = (clamped_x - plot.x) / scale
+    local display_tick = view.first + (clamped_x - plot.x) / scale
     local raw_tick = self:display_to_raw_tick(display_tick)
     local snapped_raw_tick = self:snap_tick(raw_tick)
 
@@ -3437,7 +3755,7 @@ function App:end_palette_drag(x, y)
     if not drag then return end
     local moved = drag.moved or math.abs(x - drag.start_x) + math.abs(y - drag.start_y) > 6
     if not moved then self:arm_insert_move(drag.move); return end
-    if not self.timeline_render or not widgets.point_in_rect(x, y, self.layout.timeline) then
+    if not timeline.point_in_plot(self.timeline_render, x, y) then
         self.status_text = "Drop canceled. The chart was not changed."
         return
     end
@@ -3624,6 +3942,38 @@ end
 function App:draw_inspector()
     local rect = self.layout.right
     widgets.draw_panel(rect, { fill = theme.colors.panel_alt, border = theme.colors.border })
+    local viewport = {x=rect.x+2,y=rect.y+3,w=rect.w-10,h=rect.h-24}
+    self.inspector_viewport = viewport
+    self.inspector_scroll = math.max(0,math.min(self.inspector_scroll,self.inspector_scroll_max))
+    widgets.scissor_push(viewport)
+    local height = self:draw_inspector_content({x=rect.x,y=rect.y-self.inspector_scroll,
+        w=rect.w-6,h=viewport.h})
+    widgets.scissor_pop()
+    self.inspector_scroll_max = math.max(0,height-viewport.h)
+    self.inspector_scroll = math.min(self.inspector_scroll,self.inspector_scroll_max)
+    -- Only the visible portion of a button can receive mouse input.
+    local visible = {}
+    for _,hit in ipairs(self.inspector_hits) do
+        local box=hit.rect
+        local x,y=math.max(box.x,viewport.x),math.max(box.y,viewport.y)
+        local right,bottom=math.min(box.x+box.w,viewport.x+viewport.w),math.min(box.y+box.h,viewport.y+viewport.h)
+        if right>x and bottom>y then
+            hit.rect={x=x,y=y,w=right-x,h=bottom-y};visible[#visible+1]=hit
+        end
+    end
+    self.inspector_hits=visible
+    if self.inspector_scroll_max>0 then
+        local bar_height=math.max(24,viewport.h*viewport.h/height)
+        local bar_y=viewport.y+(viewport.h-bar_height)*self.inspector_scroll/self.inspector_scroll_max
+        love.graphics.setColor(theme.colors.border)
+        love.graphics.rectangle('fill',rect.x+rect.w-6,bar_y,3,bar_height,2,2)
+        love.graphics.setFont(theme.font('tiny'));love.graphics.setColor(theme.colors.text_muted)
+        love.graphics.print(self.inspector_scroll<self.inspector_scroll_max and 'Scroll for more' or 'End of details',
+            rect.x+18,rect.y+rect.h-19)
+    end
+end
+
+function App:draw_inspector_content(rect)
     self.inspector_hits = {}
 
     local y = rect.y + 18
@@ -3634,7 +3984,7 @@ function App:draw_inspector()
         love.graphics.setFont(theme.font("small"))
         love.graphics.setColor(theme.colors.text_muted[1], theme.colors.text_muted[2], theme.colors.text_muted[3], 1)
         love.graphics.printf("Open a file and select an entry to inspect it.", rect.x + 18, y + 12, rect.w - 36, "left")
-        return
+        return y-rect.y+70
     end
 
     local preview = self:build_preview_entry(entry, self.current_work)
@@ -3709,11 +4059,40 @@ function App:draw_inspector()
     end
 
     local detail_y = info_y + 8
+    local detail_width = rect.w-28
+    local function text_height(text)
+        local font=theme.font('tiny')
+        local _,lines=font:getWrap(text,detail_width-28)
+        return math.max(1,#lines)*font:getHeight()*font:getLineHeight()
+    end
+    local has_selection=self.selected_step_index and nodes[self.selected_step_index]
+    local detail_height=38
+    if has_selection then
+        detail_height=detail_height+4*24+74
+        if format.is_raw_byte(self.current_work.steps[self.selected_step_index].code) then detail_height=detail_height+24 end
+        if self.selected_step_index==1 then
+            detail_height=detail_height+text_height(first_step_fixed_message(self.current_work.start_delay))+8
+        end
+    else detail_height=detail_height+text_height('Click a node in the timeline to inspect or edit that step.')+8 end
+    local rescue_text
+    if rescue then
+        local expanded=rules.expand_rescue_ids(entry,entry.rest_body,#self.current_work.steps)
+        local ids={}
+        for i=0,math.max(#self.current_work.steps-1,0)-1 do ids[#ids+1]=string.format('0x%02X',format.u16(expanded,i*2)) end
+        rescue_text=table.concat(ids,'  ')
+        detail_height=detail_height+18+text_height(rescue_text)+10
+    end
+    if #self.current_validation.errors>0 or #self.current_validation.warnings>0 then
+        detail_height=detail_height+18
+        for _,messages in ipairs({self.current_validation.errors,self.current_validation.warnings}) do
+            for _,message in ipairs(messages) do detail_height=detail_height+text_height('- '..message)+10 end
+        end
+    end
     local detail_rect = {
         x = rect.x + 14,
         y = detail_y,
         w = rect.w - 28,
-        h = rect.h - (detail_y - rect.y) - 18,
+        h = math.max(detail_height+16,rect.h-(detail_y-rect.y)-18),
     }
     widgets.draw_panel(detail_rect, { fill = theme.colors.panel, border = theme.colors.border_soft, radius = 10 })
     love.graphics.setFont(theme.font("small"))
@@ -3755,7 +4134,7 @@ function App:draw_inspector()
                 detail_rect.w - 28,
                 "left"
             )
-            sy = sy + 34
+            sy = sy + text_height(first_step_fixed_message(self.current_work.start_delay)) + 8
         end
         if self.selected_step_index < #nodes then
             step_line("Gap after", tostring(step.gap) .. "t", "edit_gap")
@@ -3784,7 +4163,7 @@ function App:draw_inspector()
         love.graphics.setFont(theme.font("tiny"))
         love.graphics.setColor(theme.colors.text_muted[1], theme.colors.text_muted[2], theme.colors.text_muted[3], 1)
         love.graphics.printf("Click a node in the timeline to inspect or edit that step.", detail_rect.x + 14, sy, detail_rect.w - 28, "left")
-        sy = sy + 34
+        sy = sy + text_height('Click a node in the timeline to inspect or edit that step.') + 8
     end
 
     if rescue then
@@ -3792,15 +4171,9 @@ function App:draw_inspector()
         love.graphics.setColor(theme.colors.amber[1], theme.colors.amber[2], theme.colors.amber[3], 1)
         love.graphics.print("Rescue IDs preview", detail_rect.x + 14, sy)
         sy = sy + 18
-        local expanded = rules.expand_rescue_ids(entry, entry.rest_body, #self.current_work.steps)
-        local count = math.max(#self.current_work.steps - 1, 0)
-        local ids = {}
-        for i = 0, count - 1 do
-            ids[#ids + 1] = string.format("0x%02X", format.u16(expanded, i * 2))
-        end
         love.graphics.setColor(theme.colors.text_dim[1], theme.colors.text_dim[2], theme.colors.text_dim[3], 1)
-        love.graphics.printf(table.concat(ids, "  "), detail_rect.x + 14, sy, detail_rect.w - 28, "left")
-        sy = sy + 28
+        love.graphics.printf(rescue_text, detail_rect.x + 14, sy, detail_rect.w - 28, "left")
+        sy = sy + text_height(rescue_text) + 10
     end
 
     if #self.current_validation.warnings > 0 or #self.current_validation.errors > 0 then
@@ -3812,14 +4185,15 @@ function App:draw_inspector()
         for _, message in ipairs(self.current_validation.errors) do
             love.graphics.setColor(theme.colors.danger[1], theme.colors.danger[2], theme.colors.danger[3], 1)
             love.graphics.printf("- " .. message, detail_rect.x + 14, sy, detail_rect.w - 28, "left")
-            sy = sy + 28
+            sy = sy + text_height('- '..message) + 10
         end
         for _, message in ipairs(self.current_validation.warnings) do
             love.graphics.setColor(theme.colors.amber[1], theme.colors.amber[2], theme.colors.amber[3], 1)
             love.graphics.printf("- " .. message, detail_rect.x + 14, sy, detail_rect.w - 28, "left")
-            sy = sy + 28
+            sy = sy + text_height('- '..message) + 10
         end
     end
+    return math.max(sy+16,detail_rect.y+detail_rect.h+18)-rect.y
 end
 
 function App:draw()
@@ -4042,7 +4416,7 @@ function App:undo()
     if not self.current_work or #self.undo_stack == 0 then
         return
     end
-    playback.stop(self.playback, true)
+    stop_playback_for_edit(self)
     self.redo_stack[#self.redo_stack + 1] = snapshot_from_work(self.current_work)
     self.current_work = table.remove(self.undo_stack)
     self.current_validation = self:validate_work(self.selected_entry, self.current_work)
@@ -4054,7 +4428,7 @@ function App:redo()
     if not self.current_work or #self.redo_stack == 0 then
         return
     end
-    playback.stop(self.playback, true)
+    stop_playback_for_edit(self)
     self.undo_stack[#self.undo_stack + 1] = snapshot_from_work(self.current_work)
     self.current_work = table.remove(self.redo_stack)
     self.current_validation = self:validate_work(self.selected_entry, self.current_work)
@@ -4175,6 +4549,21 @@ function App:activate_header_target(target_id)
     end
 end
 
+function App:timeline_action(kind)
+    local entry = self:current_preview_entry()
+    if not entry then return end
+    local view = timeline.viewport(entry, self.timeline_view)
+    local zoom, first = view.zoom, view.first
+    if kind == "fit" then zoom, first = 1, 0
+    elseif kind == "zoom_in" then zoom = math.min(16, math.max(1,view.total/12), zoom*2)
+    elseif kind == "zoom_out" then zoom = math.max(1, zoom/2)
+    elseif kind == "pan_left" then first = first-view.span/2
+    elseif kind == "pan_right" then first = first+view.span/2 end
+    local next_view = timeline.viewport(entry, {zoom=zoom, first_tick=first})
+    self.timeline_view = {zoom=zoom,first_tick=next_view.first,
+        follow=kind~="pan_left" and kind~="pan_right"}
+end
+
 function App:mousepressed(x, y, button)
     if self.modal then
         if button == 1 then
@@ -4257,7 +4646,9 @@ function App:mousepressed(x, y, button)
                 self.reports_tab.order_mode=self.reports_tab.order_mode=='files' and 'cpu' or 'files'
                 self.reports_tab.include_variants=false
                 self.reports_tab.scroll=0
-            elseif hit.kind == "entry" then self:open_report_entry(hit.row.file, hit.row.entry) end
+            elseif hit.kind == 'play_report' then self:start_report_playback(self.reports_tab.number~=4 and self.reports_tab.number~=5)
+            elseif hit.kind == 'play_report_voices' then self:start_report_playback(true,true)
+            elseif hit.kind == "entry" then self:open_report_entry(hit.row.file, hit.row.entry,false,hit.row.event and hit.row.event.order) end
         end
         return
     end
@@ -4265,6 +4656,12 @@ function App:mousepressed(x, y, button)
     if self.active_view == "editor" then
         local buttons = self:buttons()
         if button == 1 then
+            for _,hit in ipairs(self.timeline_render and self.timeline_render.view_hits or {}) do
+                if widgets.point_in_rect(x,y,hit.rect) then
+                    if not hit.disabled then self:timeline_action(hit.kind) end
+                    return
+                end
+            end
             for _, hit in ipairs(self.playback_hits) do
                 if widgets.point_in_rect(x, y, hit.rect) then
                     self:playback_action(hit.kind, (x - hit.rect.x) / hit.rect.w)
@@ -4275,7 +4672,10 @@ function App:mousepressed(x, y, button)
                 self:open_file_dialog()
                 return
             elseif widgets.point_in_rect(x, y, buttons.apply) then
-                self:apply_current_entry()
+                self:prompt_game_apply(false)
+                return
+            elseif widgets.point_in_rect(x,y,buttons.apply_all) then
+                self:prompt_game_apply(true)
                 return
             elseif widgets.point_in_rect(x, y, buttons.patch) then
                 self:patch_copy()
@@ -4367,6 +4767,7 @@ function App:mousepressed(x, y, button)
 
         if widgets.point_in_rect(x, y, self.layout.timeline) then
             if self.pending_insert then
+                if not timeline.point_in_plot(self.timeline_render,x,y) then return end
                 local display_tick = timeline.tick_from_x(self.timeline_render, x)
                 if display_tick then
                     if self:insert_step_at_tick(self.pending_insert.code, display_tick) then
@@ -4420,10 +4821,21 @@ function App:mousemoved(x, y)
 end
 
 function App:wheelmoved(_, y)
-    if self.view_transition then
+    if self.view_transition or self.modal then
         return
     end
     local mx, my = love.mouse.getPosition()
+    if self.active_view == "editor" and widgets.point_in_rect(mx,my,self.layout.right) then
+        self.inspector_scroll=math.max(0,math.min(self.inspector_scroll_max,self.inspector_scroll-y*32))
+        return
+    end
+    if self.active_view == "editor" and widgets.point_in_rect(mx,my,self.layout.timeline) then
+        if y == 0 then return end
+        if love.keyboard.isDown("lctrl","rctrl") then
+            self:timeline_action(y>0 and "zoom_in" or "zoom_out")
+        else self:timeline_action(y>0 and "pan_left" or "pan_right") end
+        return
+    end
     if self.active_view == "reports" then
         reports_tab.wheelmoved(self.reports_tab, y)
         return

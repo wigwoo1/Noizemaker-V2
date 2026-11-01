@@ -1,6 +1,7 @@
 local widgets = require("ui.widgets")
 local theme = require("ui.theme")
 local report = require("core.report")
+local score = require('core.score')
 local M = {}
 
 function M.new_state()
@@ -16,12 +17,28 @@ end
 function M.draw(state, rect)
     state.hits = {}
     local left, width = rect.x + 24, rect.w - 48
-    text("English report browser", left, rect.y + 18, nil, "title")
+    text("English chart browser", left, rect.y + 18, nil, "title")
     local available=state.report and state.report.cpu_route~=nil
     local ordered=available and state.order_mode~='files' and not state.include_variants
     local order_button={x=left+width-208,y=rect.y+20,w=208,h=30}
     widgets.draw_button(order_button,ordered and 'Order: CPU run' or 'Order: files',{disabled=not available})
     if available then state.hits[#state.hits+1]={kind='order',rect=order_button} end
+    local score_button={x=left+width-352,y=rect.y+20,w=134,h=30}
+    local music_available=available and score.available(state.report.number)
+    widgets.draw_button(score_button,state.playing_report and (state.number=='dance' and 'Dance playing' or 'Report playing') or
+        (music_available and (state.number=='dance' and 'Play Dance' or state.number==4 and 'Play R4 music' or state.number==5 and 'Play R5 music' or 'Play Report '..state.number) or 'Music pending'),
+        {disabled=not music_available or state.report_preparing})
+    if music_available and not state.playing_report and not state.report_preparing then
+        state.hits[#state.hits+1]={kind='play_report',rect=score_button}
+    end
+    if (state.number==4 or state.number==5) and music_available then
+        local voices_button={x=left+width-494,y=rect.y+20,w=134,h=30}
+        widgets.draw_button(voices_button,state.number==4 and 'R4 original calls' or 'R5 original calls',
+            {disabled=state.playing_report or state.report_preparing})
+        if not state.playing_report and not state.report_preparing then
+            state.hits[#state.hits+1]={kind='play_report_voices',rect=voices_button}
+        end
+    end
     text("Find a section or command, then open its timeline. Original file names stay attached to every phrase.", left, rect.y + 62, theme.colors.text_dim)
     local y = rect.y + 92
     for number = 1, 6 do
@@ -29,17 +46,25 @@ function M.draw(state, rect)
         widgets.draw_button(button, "Report " .. number, {fill = state.number == number and theme.colors.selection_soft or theme.colors.button})
         state.hits[#state.hits + 1] = {kind = "report", number = number, rect = button}
     end
-    local variant_button = {x = left + width - 208, y = y, w = 208, h = 30}
-    widgets.draw_button(variant_button, state.include_variants and "Variants: shown" or "Variants: hidden")
+    local dance_button={x=left,y=y+40,w=168,h=30}
+    widgets.draw_button(dance_button,"Ulala's Dance",{fill=state.number=='dance' and theme.colors.selection_soft or theme.colors.button})
+    state.hits[#state.hits+1]={kind='report',number='dance',rect=dance_button}
+    local variant_button = {x = left + width - 208, y = y+40, w = 208, h = 30}
+    local variant_label=state.number=='dance' and 'G branches: ' or 'Variants: '
+    widgets.draw_button(variant_button,ordered and state.number=='dance' and 'Browse stored charts'
+        or variant_label..(state.include_variants and 'shown' or 'hidden'))
     state.hits[#state.hits + 1] = {kind = "variants", rect = variant_button}
-    local search = {x = left, y = y + 42, w = width, h = 32}
+    local search = {x = left, y = y + 82, w = width, h = 32}
     widgets.draw_panel(search, {fill = theme.colors.panel, border = state.search_focus and theme.colors.selection or theme.colors.border})
     text(state.query ~= "" and ("Search: " .. state.query .. (state.search_focus and "|" or "")) or "Search section, phrase, file name, UP, CHU, HEY...", left + 12, search.y + 8, theme.colors.text_dim)
     state.hits[#state.hits + 1] = {kind = "search", rect = search}
     local title = state.report and state.report.title or state.error or "Choose a report to load its English files."
     text(title, left, search.y + 44)
-    local note=ordered and 'Recorded CPU route; other branches differ. Handoff not continuously captured. Scene names provisional.' or
+    local note=ordered and (state.report.cpu_route_note or 'Recorded CPU route; other branches differ. Handoff not continuously captured. Scene names provisional.') or
         'File order. Alternate phrases are choices, not a playlist. Scene names and unobserved locations are provisional.'
+    if state.number=='dance' then note=ordered
+        and 'One recorded run, both passes. Three note schedules unobserved; audible sync and other branches remain provisional.'
+        or 'Stored sets and G alternatives. Shared charts affect multiple positions; alternatives are not a playlist.' end
     text(note, left, search.y + 66, theme.colors.amber, "tiny")
 
     local list = {x = left, y = search.y + 92, w = width, h = math.max(40, rect.h - (search.y - rect.y) - 150)}
@@ -56,6 +81,9 @@ function M.draw(state, rect)
             widgets.draw_button(button, "Edit phrase")
             text((row.event and (row.event.order..'. ') or '')..row.file.section .. " / " .. row.label, box.x + 12, box.y + 7)
             local details = row.file.variant .. " | " .. row.file.relative_path .. " | " .. row.entry.name
+            if row.entry.dance and row.entry.dance.checked then
+                details=row.file.relative_path..' | '..row.entry.name..' | '..(row.entry.dance.uses_text~='' and row.entry.dance.uses_text or 'no direct question link')
+            end
             if row.event then
                 details=string.format('%s | %s | %s | recorded response %.2fs in this part',row.file.relative_path,row.entry.name,row.event.question,row.event.response_seconds)
                 if #row.aliases>1 then details=details..' | identical SH2 alias' end

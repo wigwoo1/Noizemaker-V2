@@ -5,9 +5,44 @@ local format = require("core.format")
 local r = report.load(TEST_GAME_ROOT, 1)
 local original = r.files[1].entries[1]
 local bank = audio.command_bank(TEST_GAME_ROOT, "r11")
-local bank12 = audio.command_bank(TEST_GAME_ROOT, "r12")
-for _, command in ipairs({"UP", "RIGHT", "LEFT", "DOWN", "CHU", "HEY"}) do
-    assert(bank12.samples[command], "R12 must also have the six English command samples")
+assert(audio.command_for_code(0x21,"r11")=="CHU" and audio.command_for_code(0x41,"r11")=="CHU",
+    "Recorded R11 flagged Chu events use the ordinary Chu voice")
+assert(audio.command_for_code(0x41,"r12")=="0x41" and audio.command_for_code(0x31,"r11")=="0x31",
+    "Voice aliases do not generalize to unverified flags or sections")
+assert(audio.command_for_code(9,"r11")=="HOLDCHU" and audio.command_for_code(9,"r12")=="CHU")
+assert(bank.samples.HOLDCHU.name=="se/r11/bank02_r11/04shoottame.adx"
+    and bank.samples.HOLDCHU.info.duration>0.89 and bank.samples.HOLDCHU.info.duration<0.91,
+    "Held Chu uses the recorded 0.9-second take, not the 1.61-second alternate")
+local extended={steps={9},hits={},timing=16,start_delay=0}
+local held_plan=playback.plan(extended,120,nil,nil,"r11")
+local held_wav=playback.render(held_plan,bank)
+assert(held_plan.events[1].command=="HOLDCHU"
+    and held_wav:sub(45,44+#bank.samples.HOLDCHU.pcm)==bank.samples.HOLDCHU.pcm,
+    "Phrase render places the complete original held-Chu PCM at the command onset")
+for _,code in ipairs({0x21,0x41}) do
+    local flagged={steps={code},hits={},timing=16,start_delay=0}
+    local flagged_plan=playback.plan(flagged,120,nil,nil,"r11")
+    local flagged_wav=playback.render(flagged_plan,bank)
+    assert(flagged.steps[1]==code and flagged_plan.events[1].code==code and flagged_plan.events[1].command=="CHU")
+    assert(flagged_wav:sub(45,44+#bank.samples.CHU.pcm)==bank.samples.CHU.pcm,
+        "Flagged Chu renders normal Chu audio while preserving its original chart byte")
+end
+local section_banks = {
+    r11 = "bank00_ulala1", r12 = "bank00u1", r21 = "bank00u1  normal",
+    r22 = "bank00_ulala1", r23 = "bank00_ulala1", r31 = "bank00_u1",
+    r41 = "bank00_ulala1", r42 = "bank00_ulala1", r43 = "bank00u1  normal",
+    r44 = "bank00", r51 = "bank00_ulala1", r52 = "bank00u1",
+    r61 = "bank00_ulala_r61", r62 = "bank00",
+}
+for stem, expected_bank in pairs(section_banks) do
+    local section_bank = stem == "r11" and bank or audio.command_bank(TEST_GAME_ROOT, stem)
+    assert(section_bank.bank_name == expected_bank, stem .. " uses its indexed English command bank")
+    assert(not section_bank.shared_source, stem .. " must not silently borrow R11 command audio")
+    for _, command in ipairs({"UP", "RIGHT", "LEFT", "DOWN", "CHU", "HEY"}) do
+        assert(section_bank.samples[command], stem .. " must decode all six English command samples")
+        assert(section_bank.samples[command].name:find("/" .. expected_bank .. "/", 1, true),
+            stem .. " sample must come from its section-specific bank")
+    end
 end
 local plan = playback.plan(original)
 assert(plan.bpm == 120 and plan.duration == 4, "opening phrase is eight beats at 120 BPM")

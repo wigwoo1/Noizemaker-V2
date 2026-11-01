@@ -26,6 +26,12 @@ end
 check(#report.rows(r, false, "Kin Kon Kan") == 27, "readable encounter search")
 check(#report.rows(r, false, "chu") > 0, "command search")
 check(#report.rows(r, false, "not-a-command") == 0, "empty search result")
+check(format.step_editor_display_name(0x41) == "Unmapped 0x41", "unknown chart bytes are clearly labeled in the editor")
+check(format.step_display_name(0x41) == "0x41", "raw byte label stays stable for technical lookups")
+check(report.command_summary({steps = {0x41}}) == "Unmapped 0x41", "report command summary flags unknown bytes")
+local unknown_node = require("ui.timeline").build_nodes({steps = {0x41}, timing = 16, hits = {}})[1]
+check(unknown_node.label == "Unmapped 0x41" and unknown_node.code == 0x41,
+    "timeline labels unknown bytes without changing the original code")
 check(not r.order_verified, "do not claim storage order is gameplay order")
 local tree = require("ui.tree")
 local before_name = main[1].entry.name
@@ -33,11 +39,30 @@ check(tree.entry_label(main[1].entry) == "Phrase 1", "matched CPU phrase has its
 check(tree.entry_label({name = "pd002b"}, true) == "Alternate B", "variant remains distinct under its phrase")
 check(main[1].entry.name == before_name, "readable labels must not rename export identities")
 local report_label, section_label = report.file_context(main[1].file.path)
-check(report_label == "Report 1" and section_label == "Rhythm Rogues encounters", "sidebar level context")
+check(report_label == "Report 1" and section_label == "Rhythm Rogues dance and rescue", "sidebar level context")
 report_label, section_label = report.file_context("C:/game/afs_english/R12_SH20.BIN")
-check(report_label == "Report 1" and section_label == "Kin Kon Kan encounter", "variant file keeps the correct encounter context")
+check(report_label == "Report 1" and section_label == "Kin Kon Kan and Purge showdown", "variant file keeps its caption-based section context")
 report_label, section_label = report.file_context("C:/game/afs_english/r31_sh.bin")
-check(report_label == "Report 3" and section_label:find("unverified", 1, true), "unknown scene must not receive a guessed name")
+check(report_label == "Report 3" and section_label == "Space Police and Noize", "English Report 3 part label")
+report_label, section_label = report.file_context("C:/game/afs_english/r22_sh.bin")
+check(report_label == "Report 2" and section_label == "Pudding, Padding, and impostors", "English Report 2 part label")
+report_label, section_label = report.file_context("C:/game/afs_english/r43_sh.bin")
+check(report_label == "Report 4" and section_label == "Purge and the Peace Carrier", "English Report 4 part label")
+report_label, section_label = report.file_context("C:/game/afs_english/r52_sh.bin")
+check(report_label == "Report 5" and section_label == "Robotic band and Jaguar", "English Report 5 part label")
+report_label, section_label = report.file_context("C:/game/afs_english/r62_sh.bin")
+check(report_label == "Report 6" and section_label == "Final dance and rescue", "English Report 6 part label")
+report_label, section_label = report.file_context("C:/game/afs_english/r14_sh.bin")
+check(report_label == "Report 1" and section_label:find("unverified", 1, true), "unknown English part remains clearly unnamed")
+
+for number = 1, 6 do
+    local other = report.load(root, number)
+    check(other.language == "English" and #other.files > 0, "load report " .. number .. " from English charts")
+    for _, file in ipairs(other.files) do
+        check(not file.section:find("unverified", 1, true), "available report part has a caption-based browser label")
+        check(file.relative_path:match("^afs_english/"), "all report labels remain tied to English chart files")
+    end
+end
 
 local root_reads = 0
 local ok, err = pcall(report.load, root, 1, function(path)

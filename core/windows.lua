@@ -20,6 +20,20 @@ void *__stdcall FindFirstFileW(const unsigned short *, NM_FIND_DATA *);
 int __stdcall FindNextFileW(void *, NM_FIND_DATA *);
 int __stdcall FindClose(void *);
 int __stdcall MoveFileExW(const unsigned short *, const unsigned short *, unsigned long);
+typedef struct {
+    unsigned long size, usage, pid;
+    size_t heap;
+    unsigned long moduleID, threads, parentPID;
+    long priority;
+    unsigned long flags;
+    unsigned short executable[260];
+} NM_PROCESS_ENTRY;
+void *__stdcall CreateToolhelp32Snapshot(unsigned long, unsigned long);
+int __stdcall Process32FirstW(void *, NM_PROCESS_ENTRY *);
+int __stdcall Process32NextW(void *, NM_PROCESS_ENTRY *);
+void *__stdcall OpenProcess(unsigned long, int, unsigned long);
+int __stdcall QueryFullProcessImageNameW(void *, unsigned long, unsigned short *, unsigned long *);
+int __stdcall CloseHandle(void *);
 ]]
 local kernel = ffi.load("kernel32")
 local M = {}
@@ -50,10 +64,30 @@ local function full_path(path)
     return utf8(result)
 end
 
+function M.game_running(path)
+    local expected=full_path(path):gsub('\\','/'):lower()
+    local name=expected:match('[^/]+$')
+    local handle=kernel.CreateToolhelp32Snapshot(2,0)
+    if handle==INVALID then return nil,'Windows could not check whether the game is running.' end
+    local entry=ffi.new('NM_PROCESS_ENTRY[1]');entry[0].size=ffi.sizeof(entry[0])
+    local found=false
+    if kernel.Process32FirstW(handle,entry)~=0 then repeat
+        if utf8(entry[0].executable):lower()==name then
+            local process=kernel.OpenProcess(0x1000,0,entry[0].pid)
+            if process==nil then found=true;break end
+            local buffer=ffi.new('unsigned short[32768]');local length=ffi.new('unsigned long[1]',32768)
+            local ok=kernel.QueryFullProcessImageNameW(process,0,buffer,length)
+            kernel.CloseHandle(process)
+            if ok==0 or utf8(buffer):gsub('\\','/'):lower()==expected then found=true;break end
+        end
+    until kernel.Process32NextW(handle,entry)==0 end
+    kernel.CloseHandle(handle);return found
+end
+
 function M.replace_file(source, destination)
     -- Same-folder temporary file, atomic replacement, flush before returning.
     if kernel.MoveFileExW(wide(source),wide(destination),9)~=0 then return true end
-    return nil,"Windows could not replace the project file. The previous save is unchanged."
+    return nil,"Windows could not replace this file. Check folder permissions and close programs using it."
 end
 
 function M.create_dir_exclusive(path)

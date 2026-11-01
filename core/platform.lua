@@ -10,6 +10,11 @@ function M.replace_file(source, destination)
     return os.rename(source,destination)
 end
 
+function M.game_running(path)
+    if windows then return windows.game_running(path) end
+    return nil,'Applying game files requires the Windows app.'
+end
+
 function M.create_dir_exclusive(path)
     if windows then return windows.create_dir_exclusive(path) end
     if M.directory_exists(path) then return false end

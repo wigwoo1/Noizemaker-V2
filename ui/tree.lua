@@ -123,6 +123,10 @@ local function fallback_group_name(base)
 end
 
 function M.entry_label(entry, child)
+    if entry.dance then
+        if child then return 'G branch (condition unverified)' end
+        return entry.dance.label
+    end
     if entry.route then return 'Phrase '..entry.route.phrase_index end
     local variant = entry.name:match("^%a+%d+(%a+)$")
     if entry.route_parent then return 'Alternate '..(variant or '?'):upper()..' (unseen)' end
@@ -190,8 +194,9 @@ function M.build_groups(entries, file_path, reports_paths, collapse_state)
         local group_key = prefix or fallback_group_name(entry.base)
         local group_label = label or ({pd = "Dance", ps = "Shooting", pk = "Final"})[group_key] or group_key
         local location=entry.route or entry.route_parent
-        if location then group_key,group_label=location.group_key,location.group_label end
-        if entry.route_unobserved and not location then group_key,group_label='unobserved','Unobserved phrases' end
+        if entry.dance then group_key,group_label='dance-set-'..entry.dance.set,'Set '..entry.dance.set end
+        if location and not entry.dance then group_key,group_label=location.group_key,location.group_label end
+        if entry.route_unobserved and not location and not entry.dance then group_key,group_label='unobserved','Unobserved phrases' end
 
         local group = group_map[group_key]
         if not group then

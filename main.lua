@@ -24,6 +24,66 @@ local function try_set_window_icon()
 end
 
 function love.load(args)
+    if args and args[1] == '--question-voice-report2-smoke-test' then
+        app=require('tests.question_voice_report2_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--question-voice-smoke-test' then
+        app=require('tests.question_voice_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--report6-voice-smoke-test' then
+        app=require('tests.report6_voice_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--report5-voice-smoke-test' then
+        app=require('tests.report5_voice_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--report5-music-smoke-test' then
+        app=require('tests.report5_music_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--report4-music-smoke-test' then
+        app=require('tests.report4_music_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--report4-voice-smoke-test' then
+        app=require('tests.report4_voice_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--game-install-smoke-test' then
+        app=require('tests.game_install_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--dance-score-smoke-test' then
+        app=require('tests.dance_score_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--report4-audio-smoke-test' then
+        app=require('tests.report4_audio_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--dance-smoke-test' then
+        app=require('tests.dance_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--report3-audio-smoke-test' then
+        app=require('tests.report3_audio_smoke').start(args)
+        return
+    end
+    if args and args[1] == '--report2-audio-smoke-test' then
+        app=require('tests.report2_audio_smoke').start(args)
+        return
+    end
+    if args and args[1] == "--inspector-smoke-test" then
+        app=require("tests.inspector_smoke").start(args)
+        return
+    end
+    if args and args[1] == "--timeline-view-smoke-test" then
+        app=require("tests.timeline_view_smoke").start(args)
+        return
+    end
     if args and args[1] == "--startup-smoke-test" then
         love.errorhandler = function(msg)
             local f = io.open(args[2] .. "/startup-error.txt", "w")
@@ -49,6 +109,10 @@ function love.load(args)
     end
     if args and args[1] == "--route-smoke-test" then
         app=require("tests.route_smoke").start(args)
+        return
+    end
+    if args and args[1] == "--report-audio-smoke-test" then
+        app=require("tests.report_audio_smoke").start(args)
         return
     end
     if args and args[1] == "--audio-smoke-test" then

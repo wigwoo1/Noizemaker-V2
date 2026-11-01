@@ -34,7 +34,7 @@ function M.header(data)
     return {offset = offset, channels = channels, rate = rate, count = count, cutoff = be16(data, 16), duration = count / rate}
 end
 
-function M.decode(data, limit)
+function M.decode(data, limit, progress)
     local h = M.header(data)
     local count = limit and math.min(h.count, limit) or h.count
     assert(count > 0 and count == math.floor(count), "Invalid ADX decode limit")
@@ -67,15 +67,22 @@ function M.decode(data, limit)
             for ch = 1, h.channels do bytes[#bytes + 1] = le16(decoded[ch][j]) end
         end
         blocks[#blocks + 1] = table.concat(bytes)
+        if progress and math.floor(base / 32) % 256 == 0 then progress(base / count) end
     end
     local pcm = table.concat(blocks)
     return pcm, {rate = h.rate, channels = h.channels, count = count, duration = count / h.rate}
 end
 
-function M.wav(pcm, info)
-    return "RIFF" .. le32(36 + #pcm) .. "WAVEfmt " .. le32(16) .. le16(1) .. le16(info.channels)
+function M.wav_header(info)
+    local size = info.count * info.channels * 2
+    return "RIFF" .. le32(36 + size) .. "WAVEfmt " .. le32(16) .. le16(1) .. le16(info.channels)
         .. le32(info.rate) .. le32(info.rate * info.channels * 2) .. le16(info.channels * 2) .. le16(16)
-        .. "data" .. le32(#pcm) .. pcm
+        .. "data" .. le32(size)
+end
+
+function M.wav(pcm, info)
+    assert(#pcm == info.count * info.channels * 2, "PCM size does not match WAV format")
+    return M.wav_header(info) .. pcm
 end
 
 return M

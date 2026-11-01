@@ -35,7 +35,8 @@ assert(third,"installed chart contains the one-frame clip-boundary example")
 assert(music.prepare(TEST_GAME_ROOT,"r11",third,third,playback.plan(third),file.buffer,cache),
     "nominal phrase length tolerates the shipped clip's one-frame rounding difference")
 assert(unmapped,"installed chart contains the inherited-cue example")
-assert(not music.binding(unmapped,file.buffer,"r11"),"an inherited cue is not guessed from file order")
+assert(music.binding(unmapped,file.buffer,"r11").index==3,
+    "the final call inherits its verified-source recorded-route music cue")
 local count=0;for _ in pairs(cache) do count=count+1 end
 assert(count==2,"repeated range playback reuses decoded music; third phrase adds one member")
 local unavailable,reason=music.prepare(TEST_GAME_ROOT,"r11",down,down,playback.plan(down,90),file.buffer,cache)
@@ -68,3 +69,49 @@ assert(plan.events[2].sample_offset==44308,"voice onset uses the stereo output s
 local output=assert(io.open(TEST_OUTPUT.."/english-response-music-preview.wav","wb"));output:write(mixed);output:close()
 output=assert(io.open(TEST_SCRATCH.."/music-response-window.pcm","wb"));output:write(background.pcm);output:close()
 print("PASS: script music cues, response phase, exact range seek, cache, stereo mixing, voice resampling, and explicit unmapped/changed-tempo behavior")
+
+-- Regression: shooting animation tails are not packet streams and contain no
+-- local music cue. The preceding mov2c music continues across these phrases.
+local shooting,following
+local shooting_count=0
+for _,source in ipairs(r.files) do
+    if source.route_source==source.relative_path then
+        local stem=source.relative_path:match('/(r%d%d)')
+        for _,entry in ipairs(source.entries) do
+            if entry.route and entry.name:match('^ps') then
+                assert(music.binding(entry,source.buffer,stem),entry.name.." must retain response music")
+                shooting_count=shooting_count+1
+            end
+            if source==file and entry.name=='ps001' then shooting=entry end
+            if source==file and entry.name=='ps002' then following=entry end
+        end
+    end
+end
+assert(shooting_count==38,"all 38 recorded shooting phrases retain music across both report parts")
+local inherited=assert(music.binding(shooting,file.buffer,'r11'))
+assert(inherited.index==25 and math.abs(inherited.offset_seconds-7.5)<0.000001,
+    "first shooting response is exactly 7.5 seconds into mov2c cue 25")
+assert(inherited.source=='recorded route script' and not inherited.alignment_verified)
+assert(not music.binding(shooting,file.buffer:sub(1,-2)..'X','r11'),
+    "a changed source cannot inherit the captured route's music")
+assert(not music.binding(shooting,file.buffer,'r12'),"same phrase name cannot borrow another part's cue")
+local shooting_cache={}
+local shooting_plan=playback.plan(shooting)
+local shooting_music=assert(music.prepare(TEST_GAME_ROOT,'r11',shooting,shooting,shooting_plan,file.buffer,shooting_cache))
+local decoded,metadata=require('core.adx').decode(music.read_member(TEST_GAME_ROOT..'/r11music.afs',25))
+assert(shooting_music.info.count==72000 and shooting_music.offset_seconds==7.5,
+    "first shooting response has 1.5 seconds of stereo music")
+assert(shooting_music.pcm==decoded:sub(360000*4+1,432000*4),
+    "shooting response PCM matches the exact inherited archive window")
+assert(shooting_music.pcm:find('[^%z]'),"shooting music window must not be silent")
+local shooting_range=playback.plan(shooting,nil,24,48)
+local shooting_slice=assert(music.prepare(TEST_GAME_ROOT,'r11',shooting,shooting,shooting_range,file.buffer,shooting_cache))
+assert(shooting_slice.pcm==shooting_music.pcm:sub(36000*4+1),"shooting range preview seeks inside the inherited track")
+local next_music=assert(music.prepare(TEST_GAME_ROOT,'r11',following,following,playback.plan(following),file.buffer,shooting_cache))
+assert(next_music.offset_seconds==10.5 and next_music.name==shooting_music.name,
+    "the next shooting phrase advances within the same track")
+local shooting_wav,shooting_info=playback.render(shooting_plan,bank,shooting_music)
+assert(shooting_plan.music and shooting_info.channels==2,"shooting preview mixes inherited music with voices")
+local preview=assert(io.open(TEST_OUTPUT..'/report1-shooting-preview.wav','wb'))
+preview:write(shooting_wav);preview:close()
+print('PASS: all 38 recorded shooting bindings, exact cue-25 PCM, non-silent stereo mix, range/next-phrase seek, and source guards')

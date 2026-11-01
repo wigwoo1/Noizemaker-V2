@@ -1,7 +1,14 @@
 -- English report import. No game files are written by this module.
 local format = require("core.format")
 local route = require("core.route")
+local dance = require('core.dance')
 local M = {}
+function M.title(number) return number=='dance' and dance.title or ('Report '..tostring(number)) end
+function M.belongs(filename,number)
+    filename=tostring(filename or ''):gsub('\\','/'):lower():match('[^/]+$') or ''
+    if number=='dance' then return filename=='r01_sh.bin' end
+    return filename:match('^r'..tostring(number)..'[1-4]_sh')~=nil
+end
 
 local VARIANTS = {
     { suffix = "", label = "Main chart file" },
@@ -10,11 +17,24 @@ local VARIANTS = {
     { suffix = "20", label = "SH20 variant - mode unverified" },
 }
 
--- Descriptive section labels supported by English captions in r11cap_e.bin
--- and r12cap_e.bin. These are not claims about exact gameplay ordering.
+-- Caption-grounded part labels. English caption files contain subjects and
+-- callouts associated with each part; the precise scene boundaries still
+-- need gameplay verification, so the UI marks these labels as provisional.
 local SECTION_NAMES = {
-    r11 = "Rhythm Rogues encounters",
-    r12 = "Kin Kon Kan encounter",
+    r11 = "Rhythm Rogues dance and rescue",
+    r12 = "Kin Kon Kan and Purge showdown",
+    r21 = "Tasty Cookin' and Shadow's broadcast",
+    r22 = "Pudding, Padding, and impostors",
+    r23 = "Pon Piriri showdown",
+    r31 = "Space Police and Noize",
+    r41 = "Rescue team under attack",
+    r42 = "Space cheerleaders and security bot",
+    r43 = "Purge and the Peace Carrier",
+    r44 = "Final consecutive dance",
+    r51 = "Emergency circuit and robot poses",
+    r52 = "Robotic band and Jaguar",
+    r61 = "Ballistic Groove Gun showdown",
+    r62 = "Final dance and rescue",
 }
 
 local function read_binary(path)
@@ -28,12 +48,13 @@ end
 function M.command_summary(entry)
     local names = {}
     for i, code in ipairs(entry.steps) do
-        names[i] = format.step_display_name(code)
+        names[i] = format.step_editor_display_name(code)
     end
     return table.concat(names, "  ")
 end
 
 function M.phrase_label(entry)
+    if entry.dance then return entry.dance.label end
     if entry.route then return entry.route.label end
     if entry.route_parent then
         local variant=entry.name:match('(%a+)$') or '?'
@@ -50,12 +71,18 @@ end
 
 function M.file_context(path)
     local name = tostring(path or ""):gsub("\\", "/"):match("([^/]+)$") or ""
+    if name:lower()=='r01_sh.bin' then return dance.title,'Sets and branch alternatives' end
     local number, part = name:lower():match("^r([1-6])([1-4])_sh%d*%.bin$")
     if not number then return nil, nil end
     return "Report " .. number, SECTION_NAMES["r" .. number .. part] or ("Section " .. part .. " - name unverified")
 end
 
 function M.load(root, number, read)
+    if number=='dance' then
+        root=(root or ''):gsub('\\','/'):gsub('/+$','')
+        assert(root~='', 'Choose the game installation folder first.')
+        return dance.load(root,read or read_binary)
+    end
     assert(type(number) == "number" and number == math.floor(number) and number >= 1 and number <= 6,
         "Choose a report from 1 to 6.")
     read = read or read_binary
@@ -65,7 +92,7 @@ function M.load(root, number, read)
         number = number, title = "Report " .. number, language = "English", files = {},
         order_verified = false,
         order_note = "Grouped by file and stored phrase order. Gameplay order and branch conditions are not yet verified.",
-        label_note = "Report 1 encounter names come from English captions. Phrase-family labels are provisional.",
+        label_note = "Part names are based on English captions; exact scene boundaries are provisional.",
     }
     -- rN0cap_e.bin contains the English report introduction and its title.
     local caption = read(root .. "/r" .. number .. "0cap_e.bin")
@@ -91,7 +118,7 @@ function M.load(root, number, read)
                 assert(ok, "Could not read English chart " .. relative .. ": " .. tostring(entries))
                 report.files[#report.files + 1] = {
                     path = path, relative_path = relative, stem = stem,
-                    section = SECTION_NAMES[stem] or ("Section " .. part .. " - name unverified"),
+                    section = SECTION_NAMES[stem] or ("Report " .. number .. " section " .. part .. " - name unverified"),
                     variant = variant.label, is_main = variant.suffix == "",
                     buffer = data, entries = entries, language = "English",
                     route_source = route.annotate(entries,relative,data),
@@ -101,6 +128,7 @@ function M.load(root, number, read)
     end
     assert(#report.files > 0, "No English charts were found for Report " .. number .. ". Check the game folder.")
     report.cpu_route,report.cpu_route_reason=route.rows(report)
+    report.cpu_route_note=route.note(number)
     return report
 end
 
@@ -108,7 +136,7 @@ function M.cpu_rows(report,query)
     local result={}
     query=tostring(query or ''):lower()
     for _,row in ipairs(report and report.cpu_route or {}) do
-        local label=M.phrase_label(row.entry)
+        local label=row.entry.dance and row.event.label or M.phrase_label(row.entry)
         local commands=M.command_summary(row.entry)
         local search=(row.file.section..' '..label..' '..commands..' '..row.file.relative_path..' '..
             row.entry.name..' '..row.event.question..' '..row.event.section):lower()
@@ -126,11 +154,13 @@ function M.rows(report, include_variants, query)
     for _, file in ipairs(report and report.files or {}) do
         if include_variants or file.is_main then
             for _, entry in ipairs(file.entries) do
+                if not report.mode_id or include_variants or not (entry.dance and entry.dance.variant) then
                 local label = M.phrase_label(entry)
                 local commands = M.command_summary(entry)
-                local search = (file.section .. " " .. file.relative_path .. " " .. label .. " " .. entry.name .. " " .. commands):lower()
+                local search = (file.section .. " " .. file.relative_path .. " " .. label .. " " .. entry.name .. " " .. commands..' '..(entry.dance and (entry.dance.uses_text..' '..entry.dance.search_text) or '')):lower()
                 if query == "" or search:find(query, 1, true) then
                     rows[#rows + 1] = {file = file, entry = entry, label = label, commands = commands}
+                end
                 end
             end
         end

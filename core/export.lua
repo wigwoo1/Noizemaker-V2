@@ -50,19 +50,24 @@ function M.verify(source,entries,output,mods)
     return true
 end
 
-function M.prepare(document,root,number,reader)
-    assert(type(number)=='number' and number==math.floor(number) and number>=1 and number<=6,'Choose Report 1 to 6.')
+function M.prepare(document,root,number,reader,include_unedited)
+    assert(number=='dance' or (type(number)=='number' and number==math.floor(number) and number>=1 and number<=6),'Choose a report or Ulala\'s Dance.')
     local scoped={format=document.format,version=document.version,language=document.language,report=number,files={}}
+    if number=='dance' then scoped.mode='ulala-dance' end
     for _,file in ipairs(document.files) do
         local relative=project.relative(file.path)
-        if relative:match('^afs_english/r'..number..'[1-4]_sh') and #file.edits>0 then
+        if report.belongs(relative,number) and (#file.edits>0 or include_unedited) then
             scoped.files[#scoped.files+1]=file
         end
     end
-    assert(#scoped.files>0,'No edited English charts to export for Report '..number..'.')
+    assert(#scoped.files>0,'No edited English charts to export for '..report.title(number)..'.')
     local restored=project.restore(json.encode(scoped),root,reader)
     local plan={report=number,files={},manifest={format='sc5-english-report-export',version=1,
         language='English',report=number,in_game_verified=false,files={}}}
+    if number=='dance' then
+        plan.manifest.format='sc5-english-mode-export'
+        plan.manifest.mode='ulala-dance';plan.manifest.report=nil
+    end
     for _,session in ipairs(restored.sessions) do
         local binary=rebuild.apply_mods(session.current_buffer,session.entries,session.mods)
         M.verify(session.current_buffer,session.entries,binary,session.mods)
@@ -90,14 +95,14 @@ function M.destination(root,path)
     return path,parent
 end
 
-function M.write(plan,destination,root)
+function M.write(plan,destination,root,reader)
     local target,parent=M.destination(root,destination)
     assert(#plan.files>0,'There are no files to export.')
     -- Recheck sources immediately before writing, including a plan retained
     -- while the user was choosing the destination.
     for _,file in ipairs(plan.files) do
         project.relative(file.path)
-        assert(project.hash(read(file.source_path))==file.metadata.source_sha256,
+        assert(project.hash((reader or read)(file.source_path))==file.metadata.source_sha256,
             'Source chart changed: '..file.path..'. Export stopped; your drafts are unchanged.')
         assert(project.hash(file.binary)==file.metadata.output_sha256,'Export data changed before writing.')
     end
@@ -110,8 +115,12 @@ function M.write(plan,destination,root)
     assert(stage,'Could not create an export folder. Check folder permissions.')
     local paths,created_data={},false
     local ok,message=pcall(function()
-        assert(platform.create_dir_exclusive(stage..'/afs_english'),'Could not create the English output folder.')
-        created_data=true
+        for _,file in ipairs(plan.files) do
+            if file.path:match('^afs_english/') and not created_data then
+                assert(platform.create_dir_exclusive(stage..'/afs_english'),'Could not create the English output folder.')
+                created_data=true
+            end
+        end
         local function output(relative,data)
             local path=stage..'/'..relative;paths[#paths+1]=path
             write(path,data)
@@ -119,7 +128,7 @@ function M.write(plan,destination,root)
         end
         for _,file in ipairs(plan.files) do output(file.path,file.binary) end
         output('export-manifest.json',json.encode(plan.manifest)..'\n')
-        local lines={'Space Channel 5 Part 2 - English Report '..plan.report..' export','',
+        local lines={'Space Channel 5 Part 2 - English '..report.title(plan.report)..' export','',
             'Changed files only. Installed game files were not modified.',
             'Keep your .sc5project file to continue editing.',
             'These exports have passed rebuild/reparse checks; in-game verification is pending.','',

@@ -166,6 +166,15 @@ function M.step_display_name(code)
     return string.format("0x%02X", code)
 end
 
+-- UI-facing label for chart commands. Keep step_display_name's raw-byte output
+-- stable for audio lookups, validation messages, and file-format diagnostics.
+function M.step_editor_display_name(code)
+    if M.is_raw_byte(code) then
+        return string.format("Unmapped 0x%02X", code)
+    end
+    return M.step_display_name(code)
+end
+
 function M.total_ticks(timing)
     return timing * 6
 end
